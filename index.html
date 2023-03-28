@@ -1,0 +1,47 @@
+<html>
+<head>
+    <title>Spank Meter</title>
+</head>
+<style>
+body{
+background-image: url("bg.jpg");
+ background-color: #cccccc;
+background-repeat:no-repeat;
+background-size:cover;
+}
+.spankbtn{
+margin-top:610px;
+margin-left:500px;
+padding:90px 400px;
+
+background:transparent;
+border:transparent;
+}
+
+.meter{
+border:5px solid green;
+display: flex;
+  align-items: center;
+justify-content:center;
+color:white;
+background:orange;
+font-weight:bold;
+font-size:40px;
+}
+</style>
+<body>
+    <script type="text/javascript">
+
+    var clicks = 0;
+    function hello() {
+        clicks += 1;
+        document.getElementById("clicks").innerHTML = clicks;
+var snd = new Audio("slap.mp3"); 
+snd.play();
+    };
+    </script>
+    <div class="meter"><p>SPANK METER 👋 : <a id="clicks">0</a></p></div>
+    <button type="button" onclick="hello()" class="spankbtn"></button>
+
+
+</body></html>
