@@ -1,161 +1,55 @@
-"schema": "http://ison-schema.orq/draft -07/schema#"
-"description": "Sample Desc"
-"Scomment": "Sample Comment"
-"type": "object"
-"properties": {
-"§ref": "#/definitions/BusinessApplicationHeaderVe2"
-)
-]
-}
-}, "definitions": {
-"BusinessApplicationHeaderVo2": {
-"description": "Sample Desc"
-"type": "object"
-"properties": {
-"charset": {
-"description": "Sample Desc",
-"type": "string"
-3, "fr": {
-"description": "Sample Desc"
-"$ref": "#/definitions/Party39"
-3, "to": "description": "Sample Desc",
-"$ref": "#/definitions/Party39"
-子,
-"bizMsgIdr": {
-"description": "Sample Desc
-"type": "string",
-"minLength": 1,
-"maxLength": 35
-"msgDefIdr": {
-"description": "Sample Dese",
-"type": "string",
-"minLength": 1,
-"maxLength": 35
-3,
-"bizSvc" : {
-"description": "Sample Desc"
-"type": "string",
-"minLength": 1,
-"maxLength": 35
-], "mktPrete": {
-AMANA
-"description": "Sample Desc"
-"$ref": "#/definitions/ImplementationSpecification1"
-3, "creDtIm": {
-"description": "Sample Desc"
-"type": "string",
-"format": "date-time"
-3, "bizPrcgotTm": {
-"description": "Sample Desc"
-"type": "string",
-"format": "date-time"
-"epyDplet": {
-"description": "Sample Desc"
-"type": "string",
-"enum": [
-"CODU"
-"copy"
-"DUPL."
-}, "pssblDplet": {"description": "Sample Desc",
-"type": "boolean"
-}, "prty": {
-"description": "Sample Desc"
-"type": "string"
-3, "santr": {
-"description": "Sample Desc"
-"type": "string"
-3, "cUta": 1
-"description": "Sample Desc"
-"type": "array"
-"minItems": 0
-"items": {
-"type"; "object"
-"$ref": "#/definitions/BusinessApplicationHeader5"
-}
-}
+import org.json.JSONObject;
 
-"BusinessApplicationHeader5": {
-"description": "Sample Desc"
-"type": "object"
-"properties": {
-"charSet": {
-"description": "Sample Desc"
-"type": "string"
-XSDG
-a? build.gradle
-3, "fr": {
-"description": "Sample Dese",
-"$ref": "#/definitions/Party39"
-3, "to": {
-"description": "Sample Dese",
-"$ref": "#/definitions/Party39"
-3, "bizMsgIdr": {
-"description": "Sample Desc",
-"type": "string",
-"minLength": 1,
-"maxLength": 35
-3, "msgDefIdr": {"msgDefIdr": {
-"description": "Sample Desc"
-"type": "string",
-"minLength": 1,
-"maxLength": 35
-},
-"bizSvc":‹
-"description": "Sample Desc"
-"type": "string"
-"minLength": 1,
-"maxLength": 35
-},
-"mktPrcte": {
-"description": "Sample Desc"
-"$ref":"#/definitions/ImplementationSpecification1"
-},
-"creDtTm": {
-"description": "Sample Desc"
-"type": "string",
-"format": "date-time"
-},
-"bizPregotTm": {"description": "Sample Desc"
-"type": "string",
-"format": "date-time"
-"epypplet": {
-"description": "Sample Desc"
-"type": "string",
-"enum": [
-"CODU"
-"COPY"
-"DUPL"
-]
-"pssbloplet": {
-"description": "Sample Desc",
-"type": "boolean"
-"prty": {
-"description": "Sample Desc",
-"type": "string"}
-"santr": {
-"description": "Sample Desc",
-"type": "string"
-fu v5subSchemajson
-}
-"ImplementationSpecification]": {
-"description": "Sample Desc"
-"type": "object",
-"properties": {
-"regy": {
-AMA
-"description": "Sample Desc",
-"type": "string"
-"minLength": 1,
-"maxLength": 2048
-3, "id": {
-"description": "Sample Desc"
-"type": "string"
-"minLength": 1,
-"maxLength": 2048
+public class JsonPathGenerator {
+    public static void main(String[] args) {
+        String jsonSchema = "{...}"; // Replace with your JSON schema
+        JSONObject schemaObject = new JSONObject(jsonSchema);
+        JSONObject resolvedSchema = resolveReferences(schemaObject, schemaObject);
 
-3"Party39": {
-"type": "object",
-"oneof": [
-{
-"§ref": "#/definitions/Party39Party
-"§ref": "#/definitions/Party39Agent
+        generatePaths("", resolvedSchema);
+    }
+
+    private static JSONObject resolveReferences(JSONObject schema, JSONObject rootSchema) {
+        if (schema.has("$ref")) {
+            String ref = schema.getString("$ref");
+            JSONObject referencedSchema = resolveReference(ref, rootSchema);
+            return resolveReferences(referencedSchema, rootSchema);
+        } else if (schema.has("properties")) {
+            JSONObject properties = schema.getJSONObject("properties");
+            for (String key : properties.keySet()) {
+                JSONObject property = properties.getJSONObject(key);
+                properties.put(key, resolveReferences(property, rootSchema));
+            }
+        } else if (schema.has("items")) {
+            JSONObject items = schema.getJSONObject("items");
+            schema.put("items", resolveReferences(items, rootSchema));
+        }
+        return schema;
+    }
+
+    private static JSONObject resolveReference(String ref, JSONObject rootSchema) {
+        if (ref.startsWith("#")) {
+            String[] path = ref.substring(2).split("/");
+            JSONObject current = rootSchema;
+            for (String segment : path) {
+                current = current.getJSONObject(segment);
+            }
+            return current;
+        } else {
+            // Handle external references if needed
+            return null;
+        }
+    }
+
+    private static void generatePaths(String currentPath, JSONObject jsonObject) {
+        for (String key : jsonObject.keySet()) {
+            String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
+            System.out.println(newPath);
+
+            Object value = jsonObject.get(key);
+            if (value instanceof JSONObject) {
+                generatePaths(newPath, (JSONObject) value);
+            }
+        }
+    }
+}
