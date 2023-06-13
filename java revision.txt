@@ -32,7 +32,9 @@ public class JsonPathGenerator {
             String[] path = ref.substring(2).split("/");
             JSONObject current = rootSchema;
             for (String segment : path) {
-                current = current.getJSONObject(segment);
+                if (!segment.equals("properties")) {
+                    current = current.getJSONObject(segment);
+                }
             }
             return current;
         } else {
@@ -43,12 +45,14 @@ public class JsonPathGenerator {
 
     private static void generatePaths(String currentPath, JSONObject jsonObject) {
         for (String key : jsonObject.keySet()) {
-            String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
-            System.out.println(newPath);
+            if (!key.equals("properties")) {
+                String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
+                System.out.println(newPath);
 
-            Object value = jsonObject.get(key);
-            if (value instanceof JSONObject) {
-                generatePaths(newPath, (JSONObject) value);
+                Object value = jsonObject.get(key);
+                if (value instanceof JSONObject) {
+                    generatePaths(newPath, (JSONObject) value);
+                }
             }
         }
     }
