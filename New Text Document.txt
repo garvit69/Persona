@@ -1,68 +1,65 @@
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-public class SchemaPathFinder {
-    public static void main(String[] args) {
-        // Example schema data
-        String schemaData = "{\n" +
-                "  \"properties\": {\n" +
-                "    \"appHdr\": {\n" +
-                "      \"$ref\": \"#/definitions/BusinessApplicationHeaderV2\"\n" +
-                "    }\n" +
-                "  }\n" +
-                "}";
-        
-        List<String> paths = getAllPaths(schemaData);
-        
-        for (String path : paths) {
-            System.out.println(path);
-        }
+public class JsonSchemaToPaths {
+
+    public static void main(String[] args) throws IOException {
+        String jsonSchema = "{\"properties\":{\"appHdr\":{\"$ref\":\"#/definitions/BusinessApplicationHeaderV2\"}},\"definitions\":{\"BusinessApplicationHeaderV2\":{\"properties\":{\"to\":{\"$ref\":\"#/definitions/Party39\"}}},\"Party39\":{\"properties\":{\"pty\":{\"name\":\"\",\"address\":{\"pincode\":\"\"}}}}}";
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode schema = objectMapper.readTree(jsonSchema);
+        List<String> paths = generatePaths(schema, schema.get("definitions"), "");
+        paths.forEach(System.out::println);
     }
 
-    private static List<String> getAllPaths(String schemaData) {
+    private static List<String> generatePaths(JsonNode schema, JsonNode definitions, String currentPath) {
         List<String> paths = new ArrayList<>();
-        findPaths(schemaData, "#", paths);
+
+        if (schema.has("type")) {
+            String type = schema.get("type").asText();
+            if ("object".equals(type)) {
+                paths.addAll(generateObjectPaths(schema, definitions, currentPath));
+            } else if ("array".equals(type)) {
+                paths.addAll(generateArrayPaths(schema, definitions, currentPath));
+            }
+        } else if (schema.has("$ref")) {
+            String ref = schema.get("$ref").asText();
+            String refKey = ref.substring(ref.lastIndexOf("/") + 1);
+            JsonNode refDefinition = definitions.get(refKey);
+            paths.addAll(generatePaths(refDefinition, definitions, currentPath));
+        } else if (schema.has("properties")) {
+            paths.addAll(generateObjectPaths(schema, definitions, currentPath));
+        }
+
         return paths;
     }
 
-    private static void findPaths(String schemaData, String basePath, List<String> paths) {
-        if (schemaData.contains("$ref")) {
-            int refIndex = schemaData.indexOf("$ref");
-            int quoteIndex = schemaData.indexOf("\"", refIndex + 7);
-            String refPath = schemaData.substring(quoteIndex + 1, schemaData.indexOf("\"", quoteIndex + 1));
-            String newBasePath = refPath.startsWith("#") ? refPath.substring(1) : basePath + "/" + refPath;
-            paths.add(newBasePath);
-            findPaths(refPath, newBasePath, paths);
-        } else if (schemaData.contains("properties")) {
-            int propertiesIndex = schemaData.indexOf("properties");
-            int braceIndex = schemaData.indexOf("{", propertiesIndex);
-            int closingBraceIndex = findClosingBraceIndex(schemaData, braceIndex);
-            String propertiesContent = schemaData.substring(braceIndex + 1, closingBraceIndex);
+    private static List<String> generateObjectPaths(JsonNode schema, JsonNode definitions, String currentPath) {
+        List<String> paths = new ArrayList<>();
+        JsonNode properties = schema.get("properties");
 
-            while (propertiesContent.contains("$ref")) {
-                int refIndex = propertiesContent.indexOf("$ref");
-                int quoteIndex = propertiesContent.indexOf("\"", refIndex + 7);
-                String refPath = propertiesContent.substring(quoteIndex + 1, propertiesContent.indexOf("\"", quoteIndex + 1));
-                String newBasePath = basePath + "/" + refPath;
-                paths.add(newBasePath);
-                findPaths(refPath, newBasePath, paths);
-                propertiesContent = propertiesContent.substring(quoteIndex + 1);
-            }
+        if (properties != null) {
+            properties.fieldNames().forEachRemaining(key -> {
+                String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
+                JsonNode property = properties.get(key);
+                paths.addAll(generatePaths(property, definitions, newPath));
+            });
         }
+
+        return paths;
     }
 
-    private static int findClosingBraceIndex(String schemaData, int startIndex) {
-        int count = 1;
-        int index = startIndex + 1;
-        while (count > 0 && index < schemaData.length()) {
-            char c = schemaData.charAt(index);
-            if (c == '{') {
-                count++;
-            } else if (c == '}') {
-                count--;
-            }
-            index++;
+    private static List<String> generateArrayPaths(JsonNode schema, JsonNode definitions, String currentPath) {
+        List<String> paths = new ArrayList<>();
+        JsonNode items = schema.get("items");
+
+        if (items != null) {
+            paths.addAll(generatePaths(items, definitions, currentPath));
         }
-        return index - 1;
+
+        return paths;
     }
 }
