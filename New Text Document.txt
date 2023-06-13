@@ -1,69 +1,40 @@
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.JsonSchemaFactory;
+import com.networknt.schema.JsonValidator;
+import com.networknt.schema.ValidationResult;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
 
-public class JsonSchemaToPaths {
+public class JsonValidationExample {
+    public static void main(String[] args) {
+        try {
+            // Load the JSON schema file
+            File schemaFile = new File("path/to/schema.json");
+            InputStream schemaStream = new FileInputStream(schemaFile);
 
-    public static void main(String[] args) throws IOException {
-        String jsonSchema = "{\"properties\":{\"appHdr\":{\"$ref\":\"#/definitions/BusinessApplicationHeaderV2\"}},\"definitions\":{\"BusinessApplicationHeaderV2\":{\"properties\":{\"to\":{\"$ref\":\"#/definitions/Party39\"}}},\"Party39\":{\"properties\":{\"pty\":{\"name\":\"\",\"address\":{\"pincode\":\"\"}}}}}";
-        ObjectMapper objectMapper = new ObjectMapper();
-        JsonNode schema = objectMapper.readTree(jsonSchema);
-        List<String> paths = generatePaths(schema, schema.get("definitions"), "");
-        paths.forEach(System.out::println);
-    }
+            // Load the JSON sample data
+            File jsonDataFile = new File("path/to/sample.json");
+            InputStream jsonDataStream = new FileInputStream(jsonDataFile);
 
-    private static List<String> generatePaths(JsonNode schema, JsonNode definitions, String currentPath) {
-    List<String> paths = new ArrayList<>();
+            // Create a JsonSchemaFactory instance
+            JsonSchemaFactory schemaFactory = JsonSchemaFactory.getInstance();
 
-    if (schema.has("type")) {
-        String type = schema.get("type").asText();
-        if ("object".equals(type)) {
-            paths.addAll(generateObjectPaths(schema, definitions, currentPath));
-        } else if ("array".equals(type)) {
-            paths.addAll(generateArrayPaths(schema, definitions, currentPath));
+            // Compile the schema into a JsonValidator
+            JsonValidator validator = schemaFactory.getSchema(schemaStream);
+
+            // Validate the JSON sample
+            ValidationResult validationResult = validator.validate(jsonDataStream);
+
+            // Check validation results
+            if (validationResult.isValid()) {
+                System.out.println("JSON sample is valid.");
+            } else {
+                System.out.println("JSON sample is invalid.");
+                System.out.println(validationResult.getErrors());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-    } else if (schema.has("$ref")) {
-        String ref = schema.get("$ref").asText();
-        String refKey = ref.substring(ref.lastIndexOf("/") + 1);
-        JsonNode refDefinition = definitions.get(refKey);
-        paths.addAll(generatePaths(refDefinition, definitions, currentPath));
-    } else if (schema.has("properties")) {
-        paths.addAll(generateObjectPaths(schema, definitions, currentPath));
-    } else if (schema.isArray()) {
-        JsonNode items = schema.get("items");
-        if (items != null) {
-            paths.addAll(generatePaths(items, definitions, currentPath));
-        }
-    }
-
-    return paths;
-}
-    private static List<String> generateObjectPaths(JsonNode schema, JsonNode definitions, String currentPath) {
-        List<String> paths = new ArrayList<>();
-        JsonNode properties = schema.get("properties");
-
-        if (properties != null) {
-            properties.fieldNames().forEachRemaining(key -> {
-                String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
-                JsonNode property = properties.get(key);
-                paths.addAll(generatePaths(property, definitions, newPath));
-            });
-        }
-
-        return paths;
-    }
-
-    private static List<String> generateArrayPaths(JsonNode schema, JsonNode definitions, String currentPath) {
-        List<String> paths = new ArrayList<>();
-        JsonNode items = schema.get("items");
-
-        if (items != null) {
-            paths.addAll(generatePaths(items, definitions, currentPath));
-        }
-
-        return paths;
     }
 }
