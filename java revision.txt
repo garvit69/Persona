@@ -1,3 +1,4 @@
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class JsonPathGenerator {
@@ -6,7 +7,8 @@ public class JsonPathGenerator {
         JSONObject schemaObject = new JSONObject(jsonSchema);
         JSONObject resolvedSchema = resolveReferences(schemaObject, schemaObject);
 
-        generatePaths("", resolvedSchema);
+        JSONObject jsonSample = generateJsonSample(resolvedSchema);
+        generatePaths("", jsonSample);
     }
 
     private static JSONObject resolveReferences(JSONObject schema, JSONObject rootSchema) {
@@ -32,9 +34,7 @@ public class JsonPathGenerator {
             String[] path = ref.substring(2).split("/");
             JSONObject current = rootSchema;
             for (String segment : path) {
-                if (!segment.equals("properties")) {
-                    current = current.getJSONObject(segment);
-                }
+                current = current.getJSONObject(segment);
             }
             return current;
         } else {
@@ -43,16 +43,61 @@ public class JsonPathGenerator {
         }
     }
 
-    private static void generatePaths(String currentPath, JSONObject jsonObject) {
-        for (String key : jsonObject.keySet()) {
-            if (!key.equals("properties")) {
+    private static JSONObject generateJsonSample(JSONObject schema) {
+        JSONObject sample = new JSONObject();
+        if (schema.has("type") && schema.getString("type").equals("object")) {
+            if (schema.has("properties")) {
+                JSONObject properties = schema.getJSONObject("properties");
+                for (String key : properties.keySet()) {
+                    JSONObject propertySchema = properties.getJSONObject(key);
+                    sample.put(key, generateJsonSample(propertySchema));
+                }
+            }
+        } else if (schema.has("type") && schema.getString("type").equals("array")) {
+            JSONObject items = schema.getJSONObject("items");
+            JSONArray array = new JSONArray();
+            array.put(generateJsonSample(items));
+            sample.put("sampleArray", array);
+        } else {
+            sample.put("sampleValue", getSampleValue(schema));
+        }
+        return sample;
+    }
+
+    private static Object getSampleValue(JSONObject schema) {
+        if (schema.has("enum")) {
+            JSONArray enumValues = schema.getJSONArray("enum");
+            if (enumValues.length() > 0) {
+                return enumValues.get(0);
+            }
+        }
+        if (schema.has("type")) {
+            String type = schema.getString("type");
+            if (type.equals("string")) {
+                return "sampleString";
+            } else if (type.equals("number")) {
+                return 0;
+            } else if (type.equals("integer")) {
+                return 0;
+            } else if (type.equals("boolean")) {
+                return true;
+            }
+        }
+        return null;
+    }
+
+    private static void generatePaths(String currentPath, Object jsonObject) {
+        if (jsonObject instanceof JSONObject) {
+            JSONObject obj = (JSONObject) jsonObject;
+            for (String key : obj.keySet()) {
                 String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
                 System.out.println(newPath);
-
-                Object value = jsonObject.get(key);
-                if (value instanceof JSONObject) {
-                    generatePaths(newPath, (JSONObject) value);
-                }
+                generatePaths(newPath, obj.get(key));
+            }
+        } else if (jsonObject instanceof JSONArray) {
+            JSONArray arr = (JSONArray) jsonObject;
+            for (int i = 0; i < arr.length(); i++) {
+                generatePaths(currentPath, arr.get(i));
             }
         }
     }
