@@ -1,62 +1,85 @@
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.json.JSONObject;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.Map;
+public class JsonSampleGenerator {
+    public static void main(String[] args) {
+        String jsonSchema = "{...}"; // Replace with your JSON schema
+        JSONObject schemaObject = new JSONObject(jsonSchema);
+        JSONObject resolvedSchema = resolveReferences(schemaObject, schemaObject);
 
-public class JsonSchemaResolver {
-    private static final String REF_PROPERTY = "$ref";
-
-    private final Map<String, JsonNode> resolvedSchemas = new HashMap<>();
-
-    public JsonNode resolveSchema(String schemaPath) throws IOException, URISyntaxException {
-        ObjectMapper mapper = new ObjectMapper();
-        JsonNode root = mapper.readTree(Files.newInputStream(Paths.get(schemaPath)));
-        return resolveReferences(root);
+        JSONObject jsonSample = generateJsonSample(resolvedSchema);
+        System.out.println(jsonSample.toString(4));
     }
 
-    private JsonNode resolveReferences(JsonNode node) throws IOException, URISyntaxException {
-        if (node.isObject()) {
-            JsonNode refNode = node.get(REF_PROPERTY);
-            if (refNode != null) {
-                String refPath = refNode.asText();
-                if (!resolvedSchemas.containsKey(refPath)) {
-                    URI refUri = new URI(refPath);
-                    String refSchemaPath = refUri.getSchemeSpecificPart();
-                    JsonNode refSchema = resolveSchema(refSchemaPath);
-                    resolvedSchemas.put(refPath, refSchema);
-                }
-                JsonNode refSchema = resolvedSchemas.get(refPath);
-                return mergeSchemas(node, refSchema);
-            } else {
-                node.fields().forEachRemaining(entry -> {
-                    JsonNode childNode = entry.getValue();
-                    JsonNode resolvedChildNode = resolveReferences(childNode);
-                    entry.setValue(resolvedChildNode);
-                });
+    private static JSONObject resolveReferences(JSONObject schema, JSONObject rootSchema) {
+        if (schema.has("$ref")) {
+            String ref = schema.getString("$ref");
+            JSONObject referencedSchema = resolveReference(ref, rootSchema);
+            return resolveReferences(referencedSchema, rootSchema);
+        } else if (schema.has("properties")) {
+            JSONObject properties = schema.getJSONObject("properties");
+            for (String key : properties.keySet()) {
+                JSONObject property = properties.getJSONObject(key);
+                properties.put(key, resolveReferences(property, rootSchema));
             }
-        } else if (node.isArray()) {
-            for (int i = 0; i < node.size(); i++) {
-                JsonNode arrayElement = node.get(i);
-                JsonNode resolvedArrayElement = resolveReferences(arrayElement);
-                node.set(i, resolvedArrayElement);
+        } else if (schema.has("items")) {
+            JSONObject items = schema.getJSONObject("items");
+            schema.put("items", resolveReferences(items, rootSchema));
+        }
+        return schema;
+    }
+
+    private static JSONObject resolveReference(String ref, JSONObject rootSchema) {
+        if (ref.startsWith("#")) {
+            String[] path = ref.substring(2).split("/");
+            JSONObject current = rootSchema;
+            for (String segment : path) {
+                current = current.getJSONObject(segment);
+            }
+            return current;
+        } else {
+            // Handle external references if needed
+            return null;
+        }
+    }
+
+    private static JSONObject generateJsonSample(JSONObject schema) {
+        JSONObject sample = new JSONObject();
+        if (schema.has("type") && schema.getString("type").equals("object")) {
+            if (schema.has("properties")) {
+                JSONObject properties = schema.getJSONObject("properties");
+                for (String key : properties.keySet()) {
+                    JSONObject propertySchema = properties.getJSONObject(key);
+                    sample.put(key, generateJsonSample(propertySchema));
+                }
+            }
+        } else if (schema.has("type") && schema.getString("type").equals("array")) {
+            JSONObject items = schema.getJSONObject("items");
+            sample.put("sampleArray", new JSONObject());
+        } else {
+            sample.put("", getEmptyValue(schema));
+        }
+        return sample;
+    }
+
+    private static Object getEmptyValue(JSONObject schema) {
+        if (schema.has("enum")) {
+            JSONArray enumValues = schema.getJSONArray("enum");
+            if (enumValues.length() > 0) {
+                return enumValues.get(0);
             }
         }
-        return node;
-    }
-
-    private JsonNode mergeSchemas(JsonNode node, JsonNode refSchema) {
-        JsonNode mergedNode = refSchema.deepCopy();
-        node.fields().forEachRemaining(entry -> {
-            String fieldName = entry.getKey();
-            JsonNode fieldValue = entry.getValue();
-            mergedNode.set(fieldName, fieldValue);
-        });
-        return mergedNode;
+        if (schema.has("type")) {
+            String type = schema.getString("type");
+            if (type.equals("string")) {
+                return "";
+            } else if (type.equals("number")) {
+                return 0;
+            } else if (type.equals("integer")) {
+                return 0;
+            } else if (type.equals("boolean")) {
+                return false;
+            }
+        }
+        return null;
     }
 }
