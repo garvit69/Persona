@@ -1,0 +1,64 @@
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+
+public class JsonSchemaToPaths {
+
+    public static void main(String[] args) throws IOException {
+        String jsonSchema = "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"properties\":{\"appHdr\":{\"$ref\":\"#/definitions/BusinessApplicationHeaderv2\"},\"wfPmtOrdrPreg\":{\"$ref\":\"#/definitions/UfPaymentOrderProcessing\"},\"wfOrgniMsg\":{\"$ref\":\"#/definitions/wfOriginalMessageType\"}},\"definitions\":{\"BusinessApplicationHeaderv2\":{\"type\":\"object\",\"properties\":{\"charSet\":{\"type\":\"string\"},\"Fr\":{\"$ref\":\"#/definitions/Party39\"}}},\"UfPaymentOrderProcessing\":{\"type\":\"object\",\"properties\":{\"amount\":{\"type\":\"number\"},\"currency\":{\"type\":\"string\"}}},\"wfOriginalMessageType\":{\"type\":\"object\",\"properties\":{\"messageType\":{\"type\":\"string\"},\"sender\":{\"$ref\":\"#/definitions/Party39\"}}},\"Party39\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"address\":{\"type\":\"string\"}}}}}";
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode schema = objectMapper.readTree(jsonSchema);
+        List<String> paths = generatePaths(schema, schema.get("definitions"), "");
+        paths.forEach(System.out::println);
+    }
+
+    private static List<String> generatePaths(JsonNode schema, JsonNode definitions, String currentPath) {
+        List<String> paths = new ArrayList<>();
+
+        if (schema.has("type")) {
+            String type = schema.get("type").asText();
+            if ("object".equals(type)) {
+                paths.addAll(generateObjectPaths(schema, definitions, currentPath));
+            } else if ("array".equals(type)) {
+                paths.addAll(generateArrayPaths(schema, definitions, currentPath));
+            }
+        } else if (schema.has("$ref")) {
+            String ref = schema.get("$ref").asText();
+            String refKey = ref.substring(ref.lastIndexOf("/") + 1);
+            JsonNode refDefinition = definitions.get(refKey);
+            paths.addAll(generatePaths(refDefinition, definitions, currentPath));
+        }
+
+        return paths;
+    }
+
+    private static List<String> generateObjectPaths(JsonNode schema, JsonNode definitions, String currentPath) {
+        List<String> paths = new ArrayList<>();
+        JsonNode properties = schema.get("properties");
+
+        if (properties != null) {
+            properties.fieldNames().forEachRemaining(key -> {
+                String newPath = currentPath.isEmpty() ? key : currentPath + "/" + key;
+                paths.add(newPath);
+                JsonNode property = properties.get(key);
+                paths.addAll(generatePaths(property, definitions, newPath));
+            });
+        }
+
+        return paths;
+    }
+
+    private static List<String> generateArrayPaths(JsonNode schema, JsonNode definitions, String currentPath) {
+        List<String> paths = new ArrayList<>();
+        JsonNode items = schema.get("items");
+
+        if (items != null) {
+            paths.addAll(generatePaths(items, definitions, currentPath));
+        }
+
+        return paths;
+    }
+}
