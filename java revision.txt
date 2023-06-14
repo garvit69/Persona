@@ -30,12 +30,9 @@ public class JSONSchemaResolver {
                     if (resolvedDefinitions.containsKey(definitionName)) {
                         return resolvedDefinitions.get(definitionName);
                     } else {
-                        JsonNode definitionNode = resolvedDefinitions.get(definitionName);
-                        if (definitionNode == null) {
-                            definitionNode = node.at(ref.substring(1));
-                            resolvedDefinitions.put(definitionName, definitionNode);
-                            return resolveReferences(definitionNode);
-                        }
+                        JsonNode definitionNode = node.at(ref.substring(1));
+                        resolvedDefinitions.put(definitionName, resolveReferences(definitionNode));
+                        return resolvedDefinitions.get(definitionName);
                     }
                 }
             }
