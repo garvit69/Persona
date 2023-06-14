@@ -1,45 +1,33 @@
-import com.github.fge.jsonschema.core.ref.JsonRef;
-import com.github.fge.jsonschema.core.tree.SchemaTree;
-import com.github.fge.jsonschema.main.JsonSchemaFactory;
-import com.github.fge.jsonschema.core.load.configuration.LoadingConfiguration;
-import com.github.fge.jsonschema.core.load.uri.URITranslatorConfiguration;
-import com.github.fge.jsonschema.core.report.ProcessingReport;
-import com.github.fge.jsonschema.main.JsonSchema;
-import com.github.fge.jsonschema.main.JsonValidator;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.JsonSchema;
+import com.networknt.schema.JsonSchemaFactory;
+import com.networknt.schema.ValidationMessage;
 
-import java.io.File;
 import java.io.IOException;
-import java.net.URI;
+import java.io.InputStream;
+import java.util.Set;
 
-public class JsonSchemaResolver {
+public class JsonValidator {
 
     public static void main(String[] args) throws IOException {
-        ObjectMapper objectMapper = new ObjectMapper();
+        // Load the schema
+        InputStream schemaStream = JsonValidator.class.getResourceAsStream("/path/to/schema.json");
+        JsonSchema schema = JsonSchemaFactory.getInstance().getSchema(schemaStream);
 
-        // Load the JSON schema
-        JsonNode schemaNode = objectMapper.readTree(new File("path/to/your/schema.json"));
+        // Load the sample JSON
+        InputStream jsonStream = JsonValidator.class.getResourceAsStream("/path/to/sample.json");
+        Object json = JsonSchemaFactory.getInstance().getJsonMapper().readValue(jsonStream, Object.class);
 
-        // Load the JSON data
-        JsonNode dataNode = objectMapper.readTree(new File("path/to/your/data.json"));
+        // Validate the JSON against the schema
+        Set<ValidationMessage> validationMessages = schema.validate(json);
 
-        // Configure the schema factory
-        URITranslatorConfiguration translatorCfg = URITranslatorConfiguration.newBuilder().build();
-        LoadingConfiguration loadingCfg = LoadingConfiguration.newBuilder().setURITranslatorConfiguration(translatorCfg).freeze();
-        JsonSchemaFactory factory = JsonSchemaFactory.newBuilder().setLoadingConfiguration(loadingCfg).freeze();
-
-        // Create a schema tree
-        SchemaTree schemaTree = factory.getSchema(schemaNode);
-
-        // Create a JSON schema
-        JsonSchema schema = factory.getJsonSchema(schemaTree);
-
-        // Validate the JSON data against the schema
-        JsonValidator validator = factory.getValidator();
-        ProcessingReport report = validator.validate(schema, dataNode);
-
-        // Print the validation report
-        System.out.println(report);
+        // Process the validation results
+        if (validationMessages.isEmpty()) {
+            System.out.println("JSON is valid!");
+        } else {
+            System.out.println("JSON is invalid. Validation errors:");
+            for (ValidationMessage message : validationMessages) {
+                System.out.println(message.getMessage());
+            }
+        }
     }
 }
