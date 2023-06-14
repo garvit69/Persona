@@ -11,47 +11,7 @@ public class JSONSchemaResolver {
     private static Map<String, JsonNode> resolvedDefinitions = new HashMap<>();
 
     public static void main(String[] args) throws Exception {
-        String jsonSchema = "{\n" +
-                "  \"schema\": \"http://ison-schema.org/draft-07/schema#\",\n" +
-                "  \"description\": \"Sample Desc\",\n" +
-                "  \"type\": \"object\",\n" +
-                "  \"properties\": {\n" +
-                "    \"$ref\": \"#/definitions/BusinessApplicationHeaderVo2\"\n" +
-                "  },\n" +
-                "  \"definitions\": {\n" +
-                "    \"BusinessApplicationHeaderVo2\": {\n" +
-                "      \"description\": \"Sample Desc\",\n" +
-                "      \"type\": \"object\",\n" +
-                "      \"properties\": {\n" +
-                "        \"charset\": {\n" +
-                "          \"description\": \"Sample Desc\",\n" +
-                "          \"type\": \"string\"\n" +
-                "        },\n" +
-                "        \"fr\": {\n" +
-                "          \"description\": \"Sample Desc\",\n" +
-                "          \"$ref\": \"#/definitions/Party39\"\n" +
-                "        },\n" +
-                "        \"to\": {\n" +
-                "          \"description\": \"Sample Desc\",\n" +
-                "          \"$ref\": \"#/definitions/Party39\"\n" +
-                "        },\n" +
-                "        \"bizMsgIdr\": {\n" +
-                "          \"description\": \"Sample Desc\",\n" +
-                "          \"type\": \"string\",\n" +
-                "          \"minLength\": 1,\n" +
-                "          \"maxLength\": 35\n" +
-                "        }\n" +
-                "      }\n" +
-                "    },\n" +
-                "    \"Party39\": {\n" +
-                "      \"type\": \"object\",\n" +
-                "      \"$ref\": \"#/definitions/Party39Party\"\n" +
-                "    },\n" +
-                "    \"Party39Party\": {\n" +
-                "      \"type\": \"string\"\n" +
-                "    }\n" +
-                "  }\n" +
-                "}";
+        String jsonSchema = "<Your JSON Schema>";
 
         JsonNode schemaNode = objectMapper.readTree(jsonSchema);
         JsonNode resolvedSchema = resolveReferences(schemaNode);
@@ -70,11 +30,9 @@ public class JSONSchemaResolver {
                     if (resolvedDefinitions.containsKey(definitionName)) {
                         return resolvedDefinitions.get(definitionName);
                     } else {
-                        JsonNode definitionNode = node.get("definitions").get(definitionName);
+                        JsonNode definitionNode = node.at(ref.substring(1));
                         resolvedDefinitions.put(definitionName, definitionNode);
-                        JsonNode resolvedDefinitionNode = resolveReferences(definitionNode);
-                        resolvedDefinitions.put(definitionName, resolvedDefinitionNode);
-                        return resolvedDefinitionNode;
+                        return resolveReferences(definitionNode);
                     }
                 }
             }
@@ -97,5 +55,3 @@ public class JSONSchemaResolver {
         return node;
     }
 }
-
-
