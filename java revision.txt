@@ -1,85 +1,101 @@
-import org.json.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-public class JsonSampleGenerator {
-    public static void main(String[] args) {
-        String jsonSchema = "{...}"; // Replace with your JSON schema
-        JSONObject schemaObject = new JSONObject(jsonSchema);
-        JSONObject resolvedSchema = resolveReferences(schemaObject, schemaObject);
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
 
-        JSONObject jsonSample = generateJsonSample(resolvedSchema);
-        System.out.println(jsonSample.toString(4));
+public class JSONSchemaResolver {
+    private static ObjectMapper objectMapper = new ObjectMapper();
+    private static Map<String, JsonNode> resolvedDefinitions = new HashMap<>();
+
+    public static void main(String[] args) throws Exception {
+        String jsonSchema = "{\n" +
+                "  \"schema\": \"http://ison-schema.org/draft-07/schema#\",\n" +
+                "  \"description\": \"Sample Desc\",\n" +
+                "  \"type\": \"object\",\n" +
+                "  \"properties\": {\n" +
+                "    \"$ref\": \"#/definitions/BusinessApplicationHeaderVo2\"\n" +
+                "  },\n" +
+                "  \"definitions\": {\n" +
+                "    \"BusinessApplicationHeaderVo2\": {\n" +
+                "      \"description\": \"Sample Desc\",\n" +
+                "      \"type\": \"object\",\n" +
+                "      \"properties\": {\n" +
+                "        \"charset\": {\n" +
+                "          \"description\": \"Sample Desc\",\n" +
+                "          \"type\": \"string\"\n" +
+                "        },\n" +
+                "        \"fr\": {\n" +
+                "          \"description\": \"Sample Desc\",\n" +
+                "          \"$ref\": \"#/definitions/Party39\"\n" +
+                "        },\n" +
+                "        \"to\": {\n" +
+                "          \"description\": \"Sample Desc\",\n" +
+                "          \"$ref\": \"#/definitions/Party39\"\n" +
+                "        },\n" +
+                "        \"bizMsgIdr\": {\n" +
+                "          \"description\": \"Sample Desc\",\n" +
+                "          \"type\": \"string\",\n" +
+                "          \"minLength\": 1,\n" +
+                "          \"maxLength\": 35\n" +
+                "        }\n" +
+                "      }\n" +
+                "    },\n" +
+                "    \"Party39\": {\n" +
+                "      \"type\": \"object\",\n" +
+                "      \"$ref\": \"#/definitions/Party39Party\"\n" +
+                "    },\n" +
+                "    \"Party39Party\": {\n" +
+                "      \"type\": \"string\"\n" +
+                "    }\n" +
+                "  }\n" +
+                "}";
+
+        JsonNode schemaNode = objectMapper.readTree(jsonSchema);
+        JsonNode resolvedSchema = resolveReferences(schemaNode);
+        String resolvedJsonSchema = objectMapper.writeValueAsString(resolvedSchema);
+        System.out.println(resolvedJsonSchema);
     }
 
-    private static JSONObject resolveReferences(JSONObject schema, JSONObject rootSchema) {
-        if (schema.has("$ref")) {
-            String ref = schema.getString("$ref");
-            JSONObject referencedSchema = resolveReference(ref, rootSchema);
-            return resolveReferences(referencedSchema, rootSchema);
-        } else if (schema.has("properties")) {
-            JSONObject properties = schema.getJSONObject("properties");
-            for (String key : properties.keySet()) {
-                JSONObject property = properties.getJSONObject(key);
-                properties.put(key, resolveReferences(property, rootSchema));
-            }
-        } else if (schema.has("items")) {
-            JSONObject items = schema.getJSONObject("items");
-            schema.put("items", resolveReferences(items, rootSchema));
-        }
-        return schema;
-    }
+    private static JsonNode resolveReferences(JsonNode node) {
+        if (node.isObject()) {
+            ObjectNode objectNode = (ObjectNode) node;
 
-    private static JSONObject resolveReference(String ref, JSONObject rootSchema) {
-        if (ref.startsWith("#")) {
-            String[] path = ref.substring(2).split("/");
-            JSONObject current = rootSchema;
-            for (String segment : path) {
-                current = current.getJSONObject(segment);
-            }
-            return current;
-        } else {
-            // Handle external references if needed
-            return null;
-        }
-    }
-
-    private static JSONObject generateJsonSample(JSONObject schema) {
-        JSONObject sample = new JSONObject();
-        if (schema.has("type") && schema.getString("type").equals("object")) {
-            if (schema.has("properties")) {
-                JSONObject properties = schema.getJSONObject("properties");
-                for (String key : properties.keySet()) {
-                    JSONObject propertySchema = properties.getJSONObject(key);
-                    sample.put(key, generateJsonSample(propertySchema));
+            if (objectNode.has("$ref")) {
+                String ref = objectNode.get("$ref").asText();
+                if (ref.startsWith("#/definitions/")) {
+                    String definitionName = ref.substring("#/definitions/".length());
+                    if (resolvedDefinitions.containsKey(definitionName)) {
+                        return resolvedDefinitions.get(definitionName);
+                    } else {
+                        JsonNode definitionNode = node.get("definitions").get(definitionName);
+                        resolvedDefinitions.put(definitionName, definitionNode);
+                        JsonNode resolvedDefinitionNode = resolveReferences(definitionNode);
+                        resolvedDefinitions.put(definitionName, resolvedDefinitionNode);
+                        return resolvedDefinitionNode;
+                    }
                 }
             }
-        } else if (schema.has("type") && schema.getString("type").equals("array")) {
-            JSONObject items = schema.getJSONObject("items");
-            sample.put("sampleArray", new JSONObject());
-        } else {
-            sample.put("", getEmptyValue(schema));
-        }
-        return sample;
-    }
 
-    private static Object getEmptyValue(JSONObject schema) {
-        if (schema.has("enum")) {
-            JSONArray enumValues = schema.getJSONArray("enum");
-            if (enumValues.length() > 0) {
-                return enumValues.get(0);
+            Iterator<Map.Entry<String, JsonNode>> fields = objectNode.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                JsonNode fieldValue = entry.getValue();
+                objectNode.set(entry.getKey(), resolveReferences(fieldValue));
             }
         }
-        if (schema.has("type")) {
-            String type = schema.getString("type");
-            if (type.equals("string")) {
-                return "";
-            } else if (type.equals("number")) {
-                return 0;
-            } else if (type.equals("integer")) {
-                return 0;
-            } else if (type.equals("boolean")) {
-                return false;
+
+        if (node.isArray()) {
+            for (int i = 0; i < node.size(); i++) {
+                JsonNode item = node.get(i);
+                ((ArrayNode) node).set(i, resolveReferences(item));
             }
         }
-        return null;
+
+        return node;
     }
 }
+
+
