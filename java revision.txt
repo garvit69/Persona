@@ -30,9 +30,18 @@ public class JSONSchemaResolver {
                     if (resolvedDefinitions.containsKey(definitionName)) {
                         return resolvedDefinitions.get(definitionName);
                     } else {
-                        JsonNode definitionNode = node.at(ref.substring(1));
-                        resolvedDefinitions.put(definitionName, resolveReferences(definitionNode));
-                        return resolvedDefinitions.get(definitionName);
+                        String[] definitionPath = definitionName.split("/");
+                        JsonNode definitionNode = node.at("/definitions/" + definitionPath[0]);
+                        if (definitionNode.isObject()) {
+                            ObjectNode resolvedDefinitionNode = objectMapper.createObjectNode();
+                            Iterator<Map.Entry<String, JsonNode>> fields = definitionNode.fields();
+                            while (fields.hasNext()) {
+                                Map.Entry<String, JsonNode> entry = fields.next();
+                                resolvedDefinitionNode.set(entry.getKey(), resolveReferences(entry.getValue()));
+                            }
+                            resolvedDefinitions.put(definitionName, resolvedDefinitionNode);
+                            return resolvedDefinitionNode;
+                        }
                     }
                 }
             }
