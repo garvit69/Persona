@@ -1,33 +1,65 @@
-import com.networknt.schema.JsonSchema;
-import com.networknt.schema.JsonSchemaFactory;
-import com.networknt.schema.ValidationMessage;
+import java.util.*;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Set;
+public class RefMapping {
+    public static void main(String[] args) {
+        String json = "{\"Payment\": {\n" +
+                "  \"Desc\": \"\",\n" +
+                "  \"Type\": \"\",\n" +
+                "  \"Properties\": {\n" +
+                "    \"wfPmt\": {\n" +
+                "      \"$ref\": \"#/definitions/Wf\"\n" +
+                "    }\n" +
+                "  }\n" +
+                "}}";
 
-public class JsonValidator {
+        Map<String, List<String>> refMapping = new HashMap<>();
+        extractRefs("Payment", json, refMapping);
+        System.out.println(refMapping);
+    }
 
-    public static void main(String[] args) throws IOException {
-        // Load the schema
-        InputStream schemaStream = JsonValidator.class.getResourceAsStream("/path/to/schema.json");
-        JsonSchema schema = JsonSchemaFactory.getInstance().getSchema(schemaStream);
+    private static void extractRefs(String parent, String json, Map<String, List<String>> refMapping) {
+        if (json == null || json.isEmpty()) {
+            return;
+        }
 
-        // Load the sample JSON
-        InputStream jsonStream = JsonValidator.class.getResourceAsStream("/path/to/sample.json");
-        Object json = JsonSchemaFactory.getInstance().getJsonMapper().readValue(jsonStream, Object.class);
+        Map<String, Object> data = parseJson(json);
+        if (data == null) {
+            return;
+        }
 
-        // Validate the JSON against the schema
-        Set<ValidationMessage> validationMessages = schema.validate(json);
+        for (Map.Entry<String, Object> entry : data.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
 
-        // Process the validation results
-        if (validationMessages.isEmpty()) {
-            System.out.println("JSON is valid!");
-        } else {
-            System.out.println("JSON is invalid. Validation errors:");
-            for (ValidationMessage message : validationMessages) {
-                System.out.println(message.getMessage());
+            if (value instanceof Map) {
+                extractRefs(key, toJsonString(value), refMapping);
+            } else if (key.equals("$ref")) {
+                refMapping.computeIfAbsent(parent, k -> new ArrayList<>()).add(value.toString());
             }
         }
+    }
+
+    private static Map<String, Object> parseJson(String json) {
+        // Parse JSON string into a Map using your preferred JSON library
+        // In this example, we are using Jackson ObjectMapper
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            return mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    private static String toJsonString(Object object) {
+        // Convert an object to JSON string using your preferred JSON library
+        // In this example, we are using Jackson ObjectMapper
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            return mapper.writeValueAsString(object);
+        } catch (JsonProcessingException e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 }
