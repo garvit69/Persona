@@ -35,12 +35,17 @@ public class RefMapping {
             Object value = entry.getValue();
 
             if (value instanceof Map) {
-                String currentParent = parent.isEmpty() ? key : parent;
-                extractRefs(currentParent, toJsonString(value), refMapping);
+                extractRefs(parent, toJsonString(value), refMapping);
             } else if (key.equals("$ref")) {
-                refMapping.computeIfAbsent(parent, k -> new ArrayList<>()).add(value.toString());
+                String outerParent = getOuterParent(parent);
+                refMapping.computeIfAbsent(outerParent, k -> new ArrayList<>()).add(value.toString());
             }
         }
+    }
+
+    private static String getOuterParent(String parent) {
+        int dotIndex = parent.lastIndexOf('.');
+        return (dotIndex != -1) ? parent.substring(0, dotIndex) : parent;
     }
 
     private static Map<String, Object> parseJson(String json) {
