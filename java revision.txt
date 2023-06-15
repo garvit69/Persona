@@ -1,138 +1,39 @@
- import com.fasterxml.jackson.databind.JsonNode;
+import com.github.fge.jsonschema.core.load.configuration.LoadingConfiguration;
+import com.github.fge.jsonschema.core.load.configuration.LoadingConfigurationBuilder;
+import com.github.fge.jsonschema.core.load.uri.URITranslatorConfiguration;
+import com.github.fge.jsonschema.core.load.uri.URITranslatorConfigurationBuilder;
+import com.github.fge.jsonschema.main.JsonSchemaFactory;
+import com.github.fge.jsonschema.main.JsonSchemaFactoryBuilder;
+import com.github.fge.jsonschema.ref.JsonRef;
+import com.github.fge.jsonschema.ref.JsonRefProcessor;
+
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.fge.jackson.JsonLoader;
+
 import java.io.IOException;
-import java.util.Iterator;
-import java.util.Map;
 
 public class JsonSchemaResolver {
 
-    private static final ObjectMapper mapper = new ObjectMapper();
+    public static void main(String[] args) throws IOException {
+        String jsonSchemaString = "{...}"; // Your JSON schema string
 
-    public static JsonNode resolveRefs(JsonNode schema) throws IOException {
-        if (schema.has("$ref")) {
-            String ref = schema.get("$ref").asText();
-            String definitionPath = ref.substring(ref.lastIndexOf('/') + 1);
-            JsonNode definition = schema.at("/definitions/" + definitionPath);
-            if (definition != null) {
-                return resolveRefs(definition);
-            }
-        }
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode jsonSchemaNode = objectMapper.readTree(jsonSchemaString);
 
-        if (schema.has("properties")) {
-            JsonNode propertiesNode = schema.get("properties");
-            Iterator<Map.Entry<String, JsonNode>> properties = propertiesNode.fields();
-            while (properties.hasNext()) {
-                Map.Entry<String, JsonNode> property = properties.next();
-                JsonNode resolvedProperty = resolveRefs(property.getValue());
-                property.setValue(resolvedProperty);
-            }
-        }
+        URITranslatorConfiguration uriTranslatorConfiguration = URITranslatorConfiguration.newBuilder().build();
+        LoadingConfiguration loadingConfiguration = LoadingConfiguration.newBuilder().setURITranslatorConfiguration(uriTranslatorConfiguration).freeze();
+        JsonSchemaFactory jsonSchemaFactory = JsonSchemaFactory.newBuilder().setLoadingConfiguration(loadingConfiguration).freeze();
 
-        if (schema.has("definitions")) {
-            JsonNode definitionsNode = schema.get("definitions");
-            Iterator<Map.Entry<String, JsonNode>> definitions = definitionsNode.fields();
-            while (definitions.hasNext()) {
-                Map.Entry<String, JsonNode> definition = definitions.next();
-                JsonNode resolvedDefinition = resolveRefs(definition.getValue());
-                definition.setValue(resolvedDefinition);
-            }
-        }
+        JsonRefProcessor refProcessor = new JsonRefProcessor(jsonSchemaFactory);
+        JsonNode resolvedSchemaNode = refProcessor.process(jsonSchemaNode);
 
-        return schema;
-    }
-
-    public static void main(String[] args) {
-        try {
-            String jsonSchemaString = "{\n" +
-                    "  \"schema\": \"http://ison-schema.org/draft-07/schema#\",\n" +
-                    "  \"description\": \"Sample Desc\",\n" +
-                    "  \"type\": \"object\",\n" +
-                    "  \"properties\": {\n" +
-                    "    \"$ref\": \"#/definitions/BusinessApplicationHeaderVo2\"\n" +
-                    "  },\n" +
-                    "  \"definitions\": {\n" +
-                    "    \"BusinessApplicationHeaderVo2\": {\n" +
-                    "      \"description\": \"Sample Desc\",\n" +
-                    "      \"type\": \"object\",\n" +
-                    "      \"properties\": {\n" +
-                    "        \"charset\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\"\n" +
-                    "        },\n" +
-                    "        \"fr\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"$ref\": \"#/definitions/Party39\"\n" +
-                    "        },\n" +
-                    "        \"to\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"$ref\": \"#/definitions/Party39\"\n" +
-                    "        },\n" +
-                    "        \"bizMsgIdr\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\",\n" +
-                    "          \"minLength\": 1,\n" +
-                    "          \"maxLength\": 35\n" +
-                    "        },\n" +
-                    "        \"msgDefIdr\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\",\n" +
-                    "          \"minLength\": 1,\n" +
-                    "          \"maxLength\":
-35\n" +
-                    "        },\n" +
-                    "        \"bizSvc\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\",\n" +
-                    "          \"minLength\": 1,\n" +
-                    "          \"maxLength\": 35\n" +
-                    "        },\n" +
-                    "        \"mktPrete\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"$ref\": \"#/definitions/ImplementationSpecification1\"\n" +
-                    "        },\n" +
-                    "        \"creDtIm\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\",\n" +
-                    "          \"format\": \"date-time\"\n" +
-                    "        },\n" +
-                    "        \"bizPrcgotTm\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\",\n" +
-                    "          \"format\": \"date-time\"\n" +
-                    "        },\n" +
-                    "        \"epyDplet\": {}\n" +
-                    "      }\n" +
-                    "    },\n" +
-                    "    \"Party39\": {\n" +
-                    "      \"description\": \"Sample Desc\",\n" +
-                    "      \"type\": \"object\",\n" +
-                    "      \"properties\": {\n" +
-                    "        \"name\": {\n" +
-                    "          \"description\": \"Sample Desc\",\n" +
-                    "          \"type\": \"string\"\n" +
-                    "        }\n" +
-                    "      }\n" +
-                    "    },\n" +
-                    "    \"ImplementationSpecification1\": {\n" +
-                    "      \"description\": \"Sample Desc\",\n" +
-                    "      \"type\": \"object\",\n" +
-                    "      \"properties\": {}\n" +
-                    "    }\n" +
-                    "  }\n" +
-                    "}";
-
-            JsonNode jsonSchema = JsonLoader.fromString(jsonSchemaString);
-            JsonNode resolvedSchema = resolveRefs(jsonSchema);
-            String resolvedSchemaString = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(resolvedSchema);
-            System.out.println(resolvedSchemaString);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        String resolvedSchemaString = objectMapper.writeValueAsString(resolvedSchemaNode);
+        System.out.println(resolvedSchemaString);
     }
 }
-```
 
-In this updated code, the `resolveReference` method has been removed, and the resolution logic is now handled within the `resolveRefs` method itself. The `$ref` is extracted from the schema, and the corresponding definition is retrieved using the provided path. If the definition is found, the references within it are resolved recursively.
+implementation 'com.github.java-json-tools:json-schema-ref-parser:0.2.5'
 
-When you run the code, it will parse the JSON schema provided in the `jsonSchemaString` variable, resolve the references, and print the resolved schema as a formatted JSON string.
+
+
+
