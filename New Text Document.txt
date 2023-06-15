@@ -1,3 +1,6 @@
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
 import java.util.*;
 
 public class RefMapping {
@@ -34,15 +37,9 @@ public class RefMapping {
             if (value instanceof Map) {
                 extractRefs(key, toJsonString(value), refMapping);
             } else if (key.equals("$ref")) {
-                String outerParent = getOuterParent(parent);
-                refMapping.computeIfAbsent(outerParent, k -> new ArrayList<>()).add(value.toString());
+                refMapping.computeIfAbsent(parent, k -> new ArrayList<>()).add(value.toString());
             }
         }
-    }
-
-    private static String getOuterParent(String parent) {
-        int dotIndex = parent.indexOf('.');
-        return (dotIndex != -1) ? parent.substring(0, dotIndex) : parent;
     }
 
     private static Map<String, Object> parseJson(String json) {
