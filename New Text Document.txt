@@ -35,7 +35,8 @@ public class RefMapping {
             Object value = entry.getValue();
 
             if (value instanceof Map) {
-                extractRefs(key, toJsonString(value), refMapping);
+                String currentParent = parent.isEmpty() ? key : parent;
+                extractRefs(currentParent, toJsonString(value), refMapping);
             } else if (key.equals("$ref")) {
                 refMapping.computeIfAbsent(parent, k -> new ArrayList<>()).add(value.toString());
             }
