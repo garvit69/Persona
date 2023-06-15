@@ -1,4 +1,85 @@
- 35\n" +
+ import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.fge.jackson.JsonLoader;
+import java.io.IOException;
+import java.util.Iterator;
+import java.util.Map;
+
+public class JsonSchemaResolver {
+
+    private static final ObjectMapper mapper = new ObjectMapper();
+
+    public static JsonNode resolveRefs(JsonNode schema) throws IOException {
+        if (schema.has("$ref")) {
+            String ref = schema.get("$ref").asText();
+            String definitionPath = ref.substring(ref.lastIndexOf('/') + 1);
+            JsonNode definition = schema.at("/definitions/" + definitionPath);
+            if (definition != null) {
+                return resolveRefs(definition);
+            }
+        }
+
+        if (schema.has("properties")) {
+            JsonNode propertiesNode = schema.get("properties");
+            Iterator<Map.Entry<String, JsonNode>> properties = propertiesNode.fields();
+            while (properties.hasNext()) {
+                Map.Entry<String, JsonNode> property = properties.next();
+                JsonNode resolvedProperty = resolveRefs(property.getValue());
+                property.setValue(resolvedProperty);
+            }
+        }
+
+        if (schema.has("definitions")) {
+            JsonNode definitionsNode = schema.get("definitions");
+            Iterator<Map.Entry<String, JsonNode>> definitions = definitionsNode.fields();
+            while (definitions.hasNext()) {
+                Map.Entry<String, JsonNode> definition = definitions.next();
+                JsonNode resolvedDefinition = resolveRefs(definition.getValue());
+                definition.setValue(resolvedDefinition);
+            }
+        }
+
+        return schema;
+    }
+
+    public static void main(String[] args) {
+        try {
+            String jsonSchemaString = "{\n" +
+                    "  \"schema\": \"http://ison-schema.org/draft-07/schema#\",\n" +
+                    "  \"description\": \"Sample Desc\",\n" +
+                    "  \"type\": \"object\",\n" +
+                    "  \"properties\": {\n" +
+                    "    \"$ref\": \"#/definitions/BusinessApplicationHeaderVo2\"\n" +
+                    "  },\n" +
+                    "  \"definitions\": {\n" +
+                    "    \"BusinessApplicationHeaderVo2\": {\n" +
+                    "      \"description\": \"Sample Desc\",\n" +
+                    "      \"type\": \"object\",\n" +
+                    "      \"properties\": {\n" +
+                    "        \"charset\": {\n" +
+                    "          \"description\": \"Sample Desc\",\n" +
+                    "          \"type\": \"string\"\n" +
+                    "        },\n" +
+                    "        \"fr\": {\n" +
+                    "          \"description\": \"Sample Desc\",\n" +
+                    "          \"$ref\": \"#/definitions/Party39\"\n" +
+                    "        },\n" +
+                    "        \"to\": {\n" +
+                    "          \"description\": \"Sample Desc\",\n" +
+                    "          \"$ref\": \"#/definitions/Party39\"\n" +
+                    "        },\n" +
+                    "        \"bizMsgIdr\": {\n" +
+                    "          \"description\": \"Sample Desc\",\n" +
+                    "          \"type\": \"string\",\n" +
+                    "          \"minLength\": 1,\n" +
+                    "          \"maxLength\": 35\n" +
+                    "        },\n" +
+                    "        \"msgDefIdr\": {\n" +
+                    "          \"description\": \"Sample Desc\",\n" +
+                    "          \"type\": \"string\",\n" +
+                    "          \"minLength\": 1,\n" +
+                    "          \"maxLength\":
+35\n" +
                     "        },\n" +
                     "        \"bizSvc\": {\n" +
                     "          \"description\": \"Sample Desc\",\n" +
