@@ -1,41 +1,66 @@
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.fge.jackson.JsonLoader;
-import com.github.fge.jsonschema.core.load.configuration.LoadingConfiguration;
-import com.github.fge.jsonschema.core.load.configuration.LoadingConfigurationBuilder;
-import com.github.fge.jsonschema.core.load.uri.URITranslatorConfiguration;
-import com.github.fge.jsonschema.core.tree.CanonicalSchemaTree;
-import com.github.fge.jsonschema.core.tree.SchemaTree;
-import com.github.fge.jsonschema.main.JsonSchemaFactory;
-import com.github.fge.jsonschema.processors.data.SchemaContext;
-import com.github.fge.jsonschema.processors.data.SchemaDigest;
-import com.github.fge.jsonschema.processors.ref.ResolvingSchemaWalker;
-import com.github.fge.jsonschema.processors.ref.SchemaExpander;
 
 import java.io.IOException;
-import java.net.URI;
+import java.util.Iterator;
+import java.util.Map;
 
-public class SchemaResolver {
+public class JsonSchemaResolver {
 
-    public static void main(String[] args) throws IOException {
-        String schemaJson = "{...}"; // Replace with your JSON schema as a string
-        ObjectMapper objectMapper = new ObjectMapper();
-        JsonNode jsonNode = objectMapper.readTree(schemaJson);
+    private static final ObjectMapper mapper = new ObjectMapper();
 
-        LoadingConfigurationBuilder loadingConfigurationBuilder = LoadingConfiguration.newBuilder();
-        loadingConfigurationBuilder.setURITranslatorConfiguration(URITranslatorConfiguration.newBuilder().setNamespace(URI.create("http://example.com/")).freeze());
-        LoadingConfiguration loadingConfiguration = loadingConfigurationBuilder.freeze();
-        JsonSchemaFactory factory = JsonSchemaFactory.newBuilder().setLoadingConfiguration(loadingConfiguration).freeze();
+    public static JsonNode resolveRefs(JsonNode schema) throws IOException {
+        if (schema.has("$ref")) {
+            String ref = schema.get("$ref").asText();
+            schema = resolveReference(schema, ref);
+        }
 
-        SchemaTree schemaTree = new CanonicalSchemaTree(jsonNode);
-        ResolvingSchemaWalker resolvingSchemaWalker = new ResolvingSchemaWalker(schemaTree);
-        SchemaExpander schemaExpander = new SchemaExpander(schemaTree);
+        if (schema.has("properties")) {
+            JsonNode propertiesNode = schema.get("properties");
+            Iterator<Map.Entry<String, JsonNode>> properties = propertiesNode.fields();
+            while (properties.hasNext()) {
+                Map.Entry<String, JsonNode> property = properties.next();
+                JsonNode resolvedProperty = resolveRefs(property.getValue());
+                property.setValue(resolvedProperty);
+            }
+        }
 
-        SchemaContext schemaContext = new SchemaContext(schemaTree);
-        SchemaDigest schemaDigest = resolvingSchemaWalker.walk(schemaContext);
-        SchemaTree resolvedSchemaTree = schemaExpander.expand(schemaDigest);
+        if (schema.has("definitions")) {
+            JsonNode definitionsNode = schema.get("definitions");
+            Iterator<Map.Entry<String, JsonNode>> definitions = definitionsNode.fields();
+            while (definitions.hasNext()) {
+                Map.Entry<String, JsonNode> definition = definitions.next();
+                JsonNode resolvedDefinition = resolveRefs(definition.getValue());
+                definition.setValue(resolvedDefinition);
+            }
+        }
 
-        JsonNode resolvedJsonNode = resolvedSchemaTree.getNode();
-        System.out.println(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(resolvedJsonNode));
+        return schema;
+    }
+
+    private static JsonNode resolveReference(JsonNode schema, String ref) throws IOException {
+        if (ref.startsWith("#/definitions/")) {
+            String definitionName = ref.substring("#/definitions/".length());
+            JsonNode definitionsNode = schema.get("definitions");
+            if (definitionsNode != null && definitionsNode.has(definitionName)) {
+                JsonNode referencedDefinition = definitionsNode.get(definitionName);
+                return resolveRefs(referencedDefinition);
+            }
+        }
+
+        return schema;
+    }
+
+    public static void main(String[] args) {
+        try {
+            String jsonSchemaString = "{ \"type\": \"object\", \"properties\": { \"person\": { \"$ref\": \"#/definitions/person\" }, \"address\": { \"$ref\": \"#/definitions/address\" } }, \"definitions\": { \"person\": { \"type\": \"object\", \"properties\": { \"name\": { \"type\": \"string\" } } }, \"address\": { \"type\": \"object\", \"properties\": { \"street\": { \"type\": \"string\" }, \"city\": { \"type\": \"string\" } } } } }";
+            JsonNode jsonSchema = JsonLoader.fromString(jsonSchemaString);
+            JsonNode resolvedSchema = resolveRefs(jsonSchema);
+            String resolvedSchemaString = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(resolvedSchema);
+            System.out.println(resolvedSchemaString);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 }
