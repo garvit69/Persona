@@ -1,39 +1,19 @@
-import com.github.fge.jsonschema.core.load.configuration.LoadingConfiguration;
-import com.github.fge.jsonschema.core.load.configuration.LoadingConfigurationBuilder;
-import com.github.fge.jsonschema.core.load.uri.URITranslatorConfiguration;
-import com.github.fge.jsonschema.core.load.uri.URITranslatorConfigurationBuilder;
-import com.github.fge.jsonschema.main.JsonSchemaFactory;
-import com.github.fge.jsonschema.main.JsonSchemaFactoryBuilder;
-import com.github.fge.jsonschema.ref.JsonRef;
-import com.github.fge.jsonschema.ref.JsonRefProcessor;
+const fs = require('fs');
+const { dereference } = require('json-schema-ref-parser');
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+// Read the input schema file
+const inputFilePath = 'schema.json';
+const schema = JSON.parse(fs.readFileSync(inputFilePath, 'utf8'));
 
-import java.io.IOException;
+// Resolve JSON references
+dereference(schema)
+  .then(resolvedSchema => {
+    // Write the resolved schema to the output file
+    const outputFilePath = 'output.json';
+    fs.writeFileSync(outputFilePath, JSON.stringify(resolvedSchema, null, 2));
 
-public class JsonSchemaResolver {
-
-    public static void main(String[] args) throws IOException {
-        String jsonSchemaString = "{...}"; // Your JSON schema string
-
-        ObjectMapper objectMapper = new ObjectMapper();
-        JsonNode jsonSchemaNode = objectMapper.readTree(jsonSchemaString);
-
-        URITranslatorConfiguration uriTranslatorConfiguration = URITranslatorConfiguration.newBuilder().build();
-        LoadingConfiguration loadingConfiguration = LoadingConfiguration.newBuilder().setURITranslatorConfiguration(uriTranslatorConfiguration).freeze();
-        JsonSchemaFactory jsonSchemaFactory = JsonSchemaFactory.newBuilder().setLoadingConfiguration(loadingConfiguration).freeze();
-
-        JsonRefProcessor refProcessor = new JsonRefProcessor(jsonSchemaFactory);
-        JsonNode resolvedSchemaNode = refProcessor.process(jsonSchemaNode);
-
-        String resolvedSchemaString = objectMapper.writeValueAsString(resolvedSchemaNode);
-        System.out.println(resolvedSchemaString);
-    }
-}
-
-implementation 'com.github.java-json-tools:json-schema-ref-parser:0.2.5'
-
-
-
-
+    console.log('Schema references resolved and saved to output.json');
+  })
+  .catch(err => {
+    console.error('Error resolving schema references:', err);
+  });
