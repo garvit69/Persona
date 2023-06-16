@@ -1,19 +1,40 @@
-const fs = require('fs');
-const { dereference } = require('json-schema-ref-parser');
+import io.vertx.core.json.JsonObject;
+import io.vertx.json.schema.Schema;
+import io.vertx.json.schema.SchemaParser;
+import io.vertx.json.schema.SchemaRouter;
+import io.vertx.json.schema.ValidationException;
 
-// Read the input schema file
-const inputFilePath = 'schema.json';
-const schema = JSON.parse(fs.readFileSync(inputFilePath, 'utf8'));
+// JSON schema content as a string
+String schemaContent = "{ \"type\": \"string\" }";
 
-// Resolve JSON references
-dereference(schema)
-  .then(resolvedSchema => {
-    // Write the resolved schema to the output file
-    const outputFilePath = 'output.json';
-    fs.writeFileSync(outputFilePath, JSON.stringify(resolvedSchema, null, 2));
+// JSON sample content as a string
+String sampleContent = "\"Hello, World!\"";
 
-    console.log('Schema references resolved and saved to output.json');
-  })
-  .catch(err => {
-    console.error('Error resolving schema references:', err);
-  });
+// Create a JSON object from the schema content
+JsonObject schemaJson = new JsonObject(schemaContent);
+
+// Create a JSON object from the sample content
+JsonObject sampleJson = new JsonObject(sampleContent);
+
+// Create a schema router
+SchemaRouter router = SchemaRouter.create(vertx);
+
+// Create a schema parser
+SchemaParser parser = SchemaParser.createDraft7Parser(router);
+
+try {
+    // Parse the JSON schema
+    Schema schema = parser.parse(schemaJson);
+
+    // Validate the JSON sample against the schema
+    schema.validate(sampleJson);
+
+    // If the validation passes, the sample is valid according to the schema
+    System.out.println("Sample is valid according to the schema.");
+} catch (ValidationException e) {
+    // Handle validation errors
+    System.out.println("Sample is invalid. Validation errors:");
+    for (String failure : e.getAllMessages()) {
+        System.out.println(failure);
+    }
+}
