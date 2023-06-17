@@ -1,4 +1,7 @@
+import com.sun.codemodel.JCodeModel;
 import org.jsonschema2pojo.*;
+import org.jsonschema2pojo.rules.RuleFactory;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
@@ -10,14 +13,16 @@ public class Main {
         outputPojoDirectory.mkdirs();
         try {
             URL source = inputJson.toURI().toURL();
-            Configuration config = new DefaultGenerationConfig() {
+            GenerationConfig config = new DefaultGenerationConfig() {
                 @Override
                 public boolean isGenerateBuilders() { // set config option by overriding method
                     return true;
                 }
             };
             SchemaMapper mapper = new SchemaMapper(new RuleFactory(config, new Jackson2Annotator(config), new SchemaStore()), new SchemaGenerator());
-            mapper.generate(source, outputPojoDirectory, "com.example", "MyClassName");
+            JCodeModel codeModel = new JCodeModel();
+            mapper.generate(codeModel, "MyClassName", "com.example", source);
+            codeModel.build(outputPojoDirectory);
         } catch (IOException e) {
             // Handle exceptions here
             e.printStackTrace();
