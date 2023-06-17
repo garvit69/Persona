@@ -1,74 +1,26 @@
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jsonschema2pojo.*;
+import java.io.File;
 import java.io.IOException;
-import java.util.*;
+import java.net.URL;
 
-public class RefMapping {
+public class Main {
     public static void main(String[] args) {
-        String json = "{\"Payment\": {\n" +
-                "  \"Desc\": \"\",\n" +
-                "  \"Type\": \"\",\n" +
-                "  \"Properties\": {\n" +
-                "    \"wfPmt\": {\n" +
-                "      \"$ref\": \"#/definitions/Wf\"\n" +
-                "    }\n" +
-                "  }\n" +
-                "}}";
-
-        Map<String, List<String>> refMapping = new HashMap<>();
-        extractRefs("", json, refMapping);
-        System.out.println(refMapping);
-    }
-
-    private static void extractRefs(String parent, String json, Map<String, List<String>> refMapping) {
-        if (json == null || json.isEmpty()) {
-            return;
-        }
-
-        Map<String, Object> data = parseJson(json);
-        if (data == null) {
-            return;
-        }
-
-        for (Map.Entry<String, Object> entry : data.entrySet()) {
-            String key = entry.getKey();
-            Object value = entry.getValue();
-
-            if (value instanceof Map) {
-                extractRefs(parent, toJsonString(value), refMapping);
-            } else if (key.equals("$ref")) {
-                String outerParent = getOuterParent(parent);
-                refMapping.computeIfAbsent(outerParent, k -> new ArrayList<>()).add(value.toString());
-            }
-        }
-    }
-
-    private static String getOuterParent(String parent) {
-        int dotIndex = parent.lastIndexOf('.');
-        return (dotIndex != -1) ? parent.substring(0, dotIndex) : parent;
-    }
-
-    private static Map<String, Object> parseJson(String json) {
-        // Parse JSON string into a Map using your preferred JSON library
-        // In this example, we are using Jackson ObjectMapper
+        File inputJson = new File("path_to_your_json_file.json");
+        File outputPojoDirectory = new File("path_to_output_directory");
+        outputPojoDirectory.mkdirs();
         try {
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+            URL source = inputJson.toURI().toURL();
+            Configuration config = new DefaultGenerationConfig() {
+                @Override
+                public boolean isGenerateBuilders() { // set config option by overriding method
+                    return true;
+                }
+            };
+            SchemaMapper mapper = new SchemaMapper(new RuleFactory(config, new Jackson2Annotator(config), new SchemaStore()), new SchemaGenerator());
+            mapper.generate(source, outputPojoDirectory, "com.example", "MyClassName");
         } catch (IOException e) {
+            // Handle exceptions here
             e.printStackTrace();
         }
-        return null;
-    }
-
-    private static String toJsonString(Object object) {
-        // Convert an object to JSON string using your preferred JSON library
-        // In this example, we are using Jackson ObjectMapper
-        try {
-            ObjectMapper mapper = new ObjectMapper();
-            return mapper.writeValueAsString(object);
-        } catch (JsonProcessingException e) {
-            e.printStackTrace();
-        }
-        return null;
     }
 }
