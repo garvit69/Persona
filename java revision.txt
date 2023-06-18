@@ -1,40 +1,95 @@
-import io.vertx.core.json.JsonObject;
-import io.vertx.json.schema.Schema;
-import io.vertx.json.schema.SchemaParser;
-import io.vertx.json.schema.SchemaRouter;
-import io.vertx.json.schema.ValidationException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.github.fge.jsonschema.core.exceptions.ProcessingException;
+import com.github.fge.jsonschema.core.report.ProcessingReport;
+import com.github.fge.jsonschema.main.JsonSchema;
+import com.github.fge.jsonschema.main.JsonSchemaFactory;
 
-// JSON schema content as a string
-String schemaContent = "{ \"type\": \"string\" }";
+import java.io.IOException;
+import java.util.Set;
 
-// JSON sample content as a string
-String sampleContent = "\"Hello, World!\"";
+import javax.validation.ConstraintViolation;
+import javax.validation.Validation;
+import javax.validation.Validator;
 
-// Create a JSON object from the schema content
-JsonObject schemaJson = new JsonObject(schemaContent);
+public class Main {
+    public static void main(String[] args) {
+        String jsonData = "{\"id\": 1, \"name\": \"John\", \"price\": 9.99}";
 
-// Create a JSON object from the sample content
-JsonObject sampleJson = new JsonObject(sampleContent);
+        // Load JSON schema
+        JsonNode schemaNode = loadSchema();
+        if (schemaNode == null) {
+            System.out.println("Failed to load JSON schema");
+            return;
+        }
 
-// Create a schema router
-SchemaRouter router = SchemaRouter.create(vertx);
+        // Validate JSON against schema
+        if (!validateJson(jsonData, schemaNode)) {
+            System.out.println("JSON data is invalid");
+            return;
+        }
 
-// Create a schema parser
-SchemaParser parser = SchemaParser.createDraft7Parser(router);
+        // Parse JSON into POJO
+        ObjectMapper objectMapper = new ObjectMapper();
+        Product product;
+        try {
+            product = objectMapper.readValue(jsonData, Product.class);
+        } catch (IOException e) {
+            System.out.println("Failed to parse JSON into POJO");
+            return;
+        }
 
-try {
-    // Parse the JSON schema
-    Schema schema = parser.parse(schemaJson);
+        // Validate POJO
+        Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
+        Set<ConstraintViolation<Product>> violations = validator.validate(product);
+        if (violations.isEmpty()) {
+            System.out.println("JSON data is valid");
+        } else {
+            System.out.println("JSON data is invalid");
+            for (ConstraintViolation<Product> violation : violations) {
+                System.out.println(violation.getPropertyPath() + " " + violation.getMessage());
+            }
+        }
+    }
 
-    // Validate the JSON sample against the schema
-    schema.validate(sampleJson);
+    private static JsonNode loadSchema() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        try {
+            return objectMapper.readTree(Main.class.getResourceAsStream("/product-schema.json"));
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
 
-    // If the validation passes, the sample is valid according to the schema
-    System.out.println("Sample is valid according to the schema.");
-} catch (ValidationException e) {
-    // Handle validation errors
-    System.out.println("Sample is invalid. Validation errors:");
-    for (String failure : e.getAllMessages()) {
-        System.out.println(failure);
+    private static boolean validateJson(String jsonData, JsonNode schemaNode) {
+        JsonSchemaFactory schemaFactory = JsonSchemaFactory.byDefault();
+        JsonSchema schema;
+        try {
+            schema = schemaFactory.getJsonSchema(schemaNode);
+        } catch (ProcessingException e) {
+            e.printStackTrace();
+            return false;
+        }
+
+        ObjectMapper objectMapper = new ObjectMapper();
+        JsonNode jsonNode;
+        try {
+            jsonNode = objectMapper.readTree(jsonData);
+        } catch (IOException e) {
+            e.printStackTrace();
+            return false;
+        }
+
+        ProcessingReport report;
+        try {
+            report = schema.validate(jsonNode);
+        } catch (ProcessingException e) {
+            e.printStackTrace();
+            return false;
+        }
+
+        return report.isSuccess();
     }
 }
