@@ -1,95 +1,56 @@
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.github.fge.jsonschema.core.exceptions.ProcessingException;
-import com.github.fge.jsonschema.core.report.ProcessingReport;
-import com.github.fge.jsonschema.main.JsonSchema;
-import com.github.fge.jsonschema.main.JsonSchemaFactory;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.cfg.DefaultGeneratorSettings;
+import com.fasterxml.jackson.databind.cfg.MapperConfig;
+import com.fasterxml.jackson.databind.introspect.Annotated;
+import com.fasterxml.jackson.databind.introspect.NopAnnotationIntrospector;
+import com.fasterxml.jackson.databind.introspect.VisibilityChecker;
+import com.fasterxml.jackson.databind.jsontype.TypeResolverBuilder;
+import com.fasterxml.jackson.databind.jsontype.impl.StdTypeResolverBuilder;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
+import com.fasterxml.jackson.module.jsonSchema.JsonSchema;
+import com.fasterxml.jackson.module.jsonSchema.JsonSchemaGenerator;
+import com.fasterxml.jackson.module.jsonSchema.factories.SchemaFactoryWrapper;
 
-import java.io.IOException;
-import java.util.Set;
-
-import javax.validation.ConstraintViolation;
-import javax.validation.Validation;
-import javax.validation.Validator;
-
-public class Main {
+public class JsonSchemaValidator {
     public static void main(String[] args) {
-        String jsonData = "{\"id\": 1, \"name\": \"John\", \"price\": 9.99}";
-
-        // Load JSON schema
-        JsonNode schemaNode = loadSchema();
-        if (schemaNode == null) {
-            System.out.println("Failed to load JSON schema");
-            return;
-        }
-
-        // Validate JSON against schema
-        if (!validateJson(jsonData, schemaNode)) {
-            System.out.println("JSON data is invalid");
-            return;
-        }
-
-        // Parse JSON into POJO
-        ObjectMapper objectMapper = new ObjectMapper();
-        Product product;
         try {
-            product = objectMapper.readValue(jsonData, Product.class);
-        } catch (IOException e) {
-            System.out.println("Failed to parse JSON into POJO");
-            return;
-        }
+            // Create ObjectMapper with custom configuration
+            ObjectMapper objectMapper = new ObjectMapper();
+            objectMapper.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+            objectMapper.setAnnotationIntrospector(new NopAnnotationIntrospector() {
+                @Override
+                public boolean hasIgnoreMarker(Annotated m) {
+                    return false;
+                }
+            });
 
-        // Validate POJO
-        Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
-        Set<ConstraintViolation<Product>> violations = validator.validate(product);
-        if (violations.isEmpty()) {
-            System.out.println("JSON data is valid");
-        } else {
-            System.out.println("JSON data is invalid");
-            for (ConstraintViolation<Product> violation : violations) {
-                System.out.println(violation.getPropertyPath() + " " + violation.getMessage());
-            }
-        }
-    }
+            // Create custom DefaultGenerationConfig
+            DefaultGenerationConfig config = new DefaultGenerationConfig() {
+                @Override
+                public VisibilityChecker<?> getDefaultVisibilityChecker() {
+                    return VisibilityChecker.Std.defaultInstance().withFieldVisibility(JsonAutoDetect.Visibility.ANY);
+                }
 
-    private static JsonNode loadSchema() {
-        ObjectMapper objectMapper = new ObjectMapper();
-        try {
-            return objectMapper.readTree(Main.class.getResourceAsStream("/product-schema.json"));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
+                @Override
+                public TypeResolverBuilder<?> getDefaultTyper(MapperConfig<?> config) {
+                    return new StdTypeResolverBuilder().init(JsonTypeInfo.Id.CLASS, null);
+                }
+            };
 
-    private static boolean validateJson(String jsonData, JsonNode schemaNode) {
-        JsonSchemaFactory schemaFactory = JsonSchemaFactory.byDefault();
-        JsonSchema schema;
-        try {
-            schema = schemaFactory.getJsonSchema(schemaNode);
-        } catch (ProcessingException e) {
-            e.printStackTrace();
-            return false;
-        }
+            // Create JsonSchemaGenerator with custom configuration
+            JsonSchemaGenerator schemaGenerator = new JsonSchemaGenerator(objectMapper, config);
 
-        ObjectMapper objectMapper = new ObjectMapper();
-        JsonNode jsonNode;
-        try {
-            jsonNode = objectMapper.readTree(jsonData);
-        } catch (IOException e) {
-            e.printStackTrace();
-            return false;
-        }
+            // Generate JSON schema from POJO
+            JsonSchema jsonSchema = schemaGenerator.generateSchema(YourPOJO.class);
 
-        ProcessingReport report;
-        try {
-            report = schema.validate(jsonNode);
-        } catch (ProcessingException e) {
-            e.printStackTrace();
-            return false;
-        }
+            // Validate JSON sample against the schema
+            objectMapper.readValue(jsonSample, YourPOJO.class);
 
-        return report.isSuccess();
+            System.out.println("JSON sample is valid.");
+        } catch (Exception e) {
+            System.out.println("JSON sample is not valid: " + e.getMessage());
+        }
     }
 }
