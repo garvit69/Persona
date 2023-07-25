@@ -1,1 +1,40 @@
-https://github.com/JetBrains/intellij-community/tree/master/platform/webSymbols/web-types-gen/ext/src/com/intellij/webSymbols/webTypes/gen
+#include <iostream>
+using namespace std;
+
+string caesar_cipher(string plain_text, int shift_key) {
+    string cipher_text = "";
+    for (char& c : plain_text) {
+        if (isalpha(c)) {
+            // Determine the case (uppercase or lowercase) of the character
+            char base = isupper(c) ? 'A' : 'a';
+
+            // Shift the character by the key
+            char shifted_char = (c - base + shift_key) % 26 + base;
+            cipher_text += shifted_char;
+        } else {
+            cipher_text += c;
+        }
+    }
+
+    return cipher_text;
+}
+
+int main() {
+    string plain_text, cipher_text;
+    int shift_key;
+
+    cout << "Enter the plaintext: ";
+    getline(cin, plain_text);
+
+    cout << "Enter the shifting key (a number between 1 and 25): ";
+    cin >> shift_key;
+
+    if (shift_key < 1 || shift_key > 25) {
+        cout << "Invalid shifting key. Please enter a number between 1 and 25." << endl;
+    } else {
+        cipher_text = caesar_cipher(plain_text, shift_key);
+        cout << "Ciphertext: " << cipher_text << endl;
+    }
+
+    return 0;
+}
