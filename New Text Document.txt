@@ -19,8 +19,12 @@ string caesar_cipher(string plain_text, int shift_key) {
     return cipher_text;
 }
 
+string caesar_decipher(string cipher_text, int shift_key) {
+    return caesar_cipher(cipher_text, 26 - shift_key);
+}
+
 int main() {
-    string plain_text, cipher_text;
+    string plain_text, cipher_text, deciphered_text;
     int shift_key;
 
     cout << "Enter the plaintext: ";
@@ -31,10 +35,14 @@ int main() {
 
     if (shift_key < 1 || shift_key > 25) {
         cout << "Invalid shifting key. Please enter a number between 1 and 25." << endl;
-    } else {
-        cipher_text = caesar_cipher(plain_text, shift_key);
-        cout << "Ciphertext: " << cipher_text << endl;
+        return 1;
     }
+
+    cipher_text = caesar_cipher(plain_text, shift_key);
+    cout << "Ciphertext: " << cipher_text << endl;
+
+    deciphered_text = caesar_decipher(cipher_text, shift_key);
+    cout << "Deciphered plaintext: " << deciphered_text << endl;
 
     return 0;
 }
