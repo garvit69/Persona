@@ -1,0 +1,1430 @@
+================================================================================
+  MONGO ARCHIVER — Spring Boot (v6)
+  Configurable cross-collection MongoDB archiver
+  Automated backfill on startup | Resume on restart | Daily incremental archival
+================================================================================
+
+
+================================================================================
+  PROJECT STRUCTURE
+================================================================================
+
+  mongo-archiver-java-v6/
+  ├── pom.xml
+  └── src/main/
+      ├── resources/
+      │   └── application.yml
+      └── java/com/archiver/
+          ├── MongoArchiverApplication.java
+          ├── config/
+          │   └── ArchiverProperties.java
+          ├── core/
+          │   ├── Archiver.java                  ← run() + runForDateRange()
+          │   ├── BackfillService.java            ← NEW: orchestrates monthly slices
+          │   └── BackfillStateRepository.java    ← NEW: persists resume point
+          ├── job/
+          │   └── ArchiveCronJob.java             ← calls BackfillService on startup
+          ├── model/
+          │   ├── ArchiveLogEntry.java
+          │   └── BackfillState.java              ← NEW: backfill progress model
+          └── util/
+              ├── ArchiveLogger.java
+              ├── IdPathResolver.java
+              └── IndexManager.java
+
+
+================================================================================
+  COMPLETE FLOW DIAGRAM
+================================================================================
+
+  APPLICATION STARTUP
+  │
+  ├─ Spring Boot context initialises
+  ├─ ArchiverProperties bound from application.yml
+  ├─ ArchiveLogger.ensureIndexes()     → archiveLog indexes
+  ├─ BackfillStateRepository.ensureIndexes() → backfillState index
+  │
+  └─ BackfillService.runBackfillIfNeeded()
+       │
+       └─ For each JOB (orders, invoices...)
+            │
+            ├─ Load backfillState from MongoDB
+            │
+            ├─ status = COMPLETED?
+            │    YES ──► skip, scheduler will handle it
+            │
+            ├─ status = IN_PROGRESS?  (app was restarted mid-backfill)
+            │    YES ──► resume from lastCompletedSliceEnd
+            │
+            └─ No state yet (fresh install)?
+                 │
+                 ├─ Query anchor collection for oldest createdAt record
+                 │
+                 ├─ Oldest record within retention window?
+                 │    YES ──► no backfill needed, skip
+                 │
+                 ├─ Calculate monthly slices:
+                 │    fromDate = floor(oldestRecord) to month start
+                 │    toDate   = floor(now - archiveAfterDays) to month start
+                 │    slices   = months between fromDate and toDate
+                 │
+                 ├─ Persist backfillState { status: IN_PROGRESS, totalSlices: N }
+                 │
+                 └─ Run slices sequentially
+                      │
+                      └─ For each monthly slice (fromDate → toDate)
+                           │
+                           ├─ Archiver.runForDateRange(sliceStart, sliceEnd)
+                           │    │
+                           │    ├─ IndexManager.ensureIndex() for all fields
+                           │    ├─ Fetch anchor IDs: createdAt >= from AND < to
+                           │    ├─ Process in batches
+                           │    │    └─ For each entity:
+                           │    │         ├─ Archive related collections
+                           │    │         ├─ If all succeeded → archive anchor
+                           │    │         └─ Write ONE archiveLog entry
+                           │    └─ finally: IndexManager.dropCreatedIndexes()
+                           │
+                           ├─ Persist lastCompletedSliceEnd = sliceEnd  ← RESUME POINT
+                           │    (if app restarts here, next startup resumes from sliceEnd)
+                           │
+                           └─ Next slice...
+                      │
+                      └─ All slices done → persist status: COMPLETED
+  │
+  └─ Scheduler registered → daily runs begin
+
+
+  DAILY CRON TRIGGER  (2AM IST)
+  │
+  ├─ AtomicBoolean guard — skip if already running
+  │
+  └─ For each JOB
+       │
+       └─ Archiver.run()
+            ├─ IndexManager.ensureIndex() for all fields
+            ├─ Fetch anchor IDs: createdAt < (now - archiveAfterDays)
+            │   (only records that became eligible today — small volume)
+            ├─ Process in batches
+            │    └─ For each entity:
+            │         ├─ Archive related collections (related-first, anchor-last)
+            │         └─ Write ONE archiveLog entry
+            └─ finally: IndexManager.dropCreatedIndexes()
+
+
+================================================================================
+  BACKFILL STATE — DOCUMENT SHAPE
+================================================================================
+
+  Collection: backfillState  (one document per job)
+
+  -- Fresh start, slice 7 of 36 just completed --
+  {
+    "jobName"               : "orders",
+    "status"                : "IN_PROGRESS",
+    "backfillFromDate"      : ISODate("2022-01-01"),
+    "backfillToDate"        : ISODate("2025-01-01"),
+    "lastCompletedSliceEnd" : ISODate("2022-08-01"),   ← resume here on restart
+    "totalSlices"           : 36,
+    "completedSlices"       : 7,
+    "startedAt"             : ISODate("2025-07-01T02:00:00Z"),
+    "completedAt"           : null
+  }
+
+  -- Backfill fully done --
+  {
+    "jobName"               : "orders",
+    "status"                : "COMPLETED",
+    "backfillFromDate"      : ISODate("2022-01-01"),
+    "backfillToDate"        : ISODate("2025-01-01"),
+    "lastCompletedSliceEnd" : ISODate("2025-01-01"),
+    "totalSlices"           : 36,
+    "completedSlices"       : 36,
+    "startedAt"             : ISODate("2025-07-01T02:00:00Z"),
+    "completedAt"           : ISODate("2025-07-01T04:37:00Z")
+  }
+
+
+================================================================================
+  AUDIT LOG — DOCUMENT SHAPE
+================================================================================
+
+  Collection: archiveLog  (one document per entity, upserted each run)
+
+  {
+    "jobName"   : "orders",
+    "entityId"  : "ORD-7823",
+    "status"    : "SUCCESS | PARTIAL_FAILURE | FAILED",
+    "collections": {
+      "orderItems"        : "SUCCESS | FAILED | NO_DOCUMENTS",
+      "orderPayments"     : "SUCCESS | FAILED | NO_DOCUMENTS",
+      "orderEvents"       : "SUCCESS | FAILED | NO_DOCUMENTS",
+      "orderNotifications": "SUCCESS | FAILED | NO_DOCUMENTS",
+      "orders"            : "SUCCESS | FAILED | NO_DOCUMENTS | SKIPPED"
+    },
+    "runAt"      : ISODate("..."),
+    "retryCount" : 1,
+    "createdAt"  : ISODate("...")
+  }
+
+
+================================================================================
+  DEPLOYMENT — FIRST RUN
+================================================================================
+
+  No manual steps needed. Just deploy and start:
+
+    MONGO_URI=mongodb://your-host:27017 \
+    MONGO_DB=yourdb \
+    java -jar target/mongo-archiver-1.0.0.jar
+
+  The app will:
+    1. Find the oldest record in each anchor collection
+    2. Calculate how many monthly slices are needed
+    3. Run them automatically, one by one
+    4. Persist progress after each slice (restart-safe)
+    5. Hand over to the daily scheduler when done
+
+  If the app is restarted mid-backfill:
+    → Reads lastCompletedSliceEnd from backfillState
+    → Resumes from that slice
+    → Does NOT start over
+
+  Once backfillState.status = COMPLETED:
+    → Subsequent restarts skip backfill entirely
+    → Only the daily scheduler runs
+
+
+================================================================================
+  MONITORING
+================================================================================
+
+  -- Backfill progress --
+  db.backfillState.find().pretty()
+
+  -- How many slices done --
+  db.backfillState.find({}, { jobName:1, completedSlices:1, totalSlices:1, status:1 })
+
+  -- Archive failures --
+  db.archiveLog.find({ status: { $in: ["FAILED","PARTIAL_FAILURE"] } }).sort({ runAt: -1 })
+
+  -- Which collection is failing --
+  db.archiveLog.find({ "collections.orderNotifications": "FAILED" })
+
+  -- Leftover temp indexes after a crash --
+  db.orders.getIndexes().filter(i => i.name.startsWith("_arch_tmp_"))
+
+  -- Reset backfill for a job (force re-run from scratch) --
+  db.backfillState.deleteOne({ jobName: "orders" })
+
+
+================================================================================
+  WHAT CHANGED IN v6 (vs v5)
+================================================================================
+
+  NEW: model/BackfillState.java
+    Persisted document tracking backfill progress per job.
+    Fields: status, backfillFromDate, backfillToDate,
+            lastCompletedSliceEnd, totalSlices, completedSlices.
+
+  NEW: core/BackfillStateRepository.java
+    Reads/writes the backfillState collection.
+    saveInitial(), markSliceCompleted(), markCompleted(), ensureIndexes().
+
+  NEW: core/BackfillService.java
+    Orchestrates the full backfill on startup.
+    Detects oldest record, calculates slices, runs them sequentially,
+    persists resume point after each slice.
+    State machine: NO_STATE → IN_PROGRESS → COMPLETED.
+
+  CHANGED: core/Archiver.java
+    Added runForDateRange(fromDate, toDate) alongside existing run().
+    Extracted shared executeWithQuery(Query) to avoid duplication.
+    DateRangeOverride config class removed — no longer needed.
+
+  CHANGED: job/ArchiveCronJob.java
+    PostConstruct now calls backfillService.runBackfillIfNeeded()
+    before the scheduler becomes active.
+
+  REMOVED: config/DateRangeOverride.java
+    No longer needed — backfill is fully automated via BackfillService.
+
+
+================================================================================
+  FILE: pom.xml
+================================================================================
+
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.3</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.archiver</groupId>
+    <artifactId>mongo-archiver</artifactId>
+    <version>1.0.0</version>
+    <properties><java.version>17</java.version></properties>
+    <dependencies>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-mongodb</artifactId></dependency>
+        <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-configuration-processor</artifactId><optional>true</optional></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes><exclude><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId></exclude></excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+
+================================================================================
+  FILE: src/main/resources/application.yml
+================================================================================
+
+spring:
+  data:
+    mongodb:
+      uri: ${MONGO_URI:mongodb://localhost:27017}
+      database: ${MONGO_DB:appdb}
+
+archiver:
+  schedule: "0 0 2 * * ?"
+  timezone: Asia/Kolkata
+  archive-log-collection: archiveLog
+  jobs:
+    - name: orders
+      batch-size: 100
+      anchor:
+        collection: orders
+        id-field: orderId
+        created-ts-field: createdAt
+        archive-after-days: 180
+        delete-after-archive: true
+        archive-collection: orders_archive
+      related:
+        - collection: orderItems
+          id-path: orderId
+          delete-after-archive: true
+          archive-collection: orderItems_archive
+        - collection: orderPayments
+          id-path: order.id
+          delete-after-archive: true
+          archive-collection: orderPayments_archive
+        - collection: orderEvents
+          id-path: meta.referenceId
+          delete-after-archive: false
+          archive-collection: orderEvents_archive
+        - collection: orderNotifications
+          id-path: payload.orderId
+          delete-after-archive: true
+          archive-collection: orderNotifications_archive
+
+logging:
+  level:
+    com.archiver: INFO
+  file:
+    name: logs/archiver.log
+    max-size: 10MB
+    max-history: 5
+
+================================================================================
+  FILE: src/main/java/com/archiver/MongoArchiverApplication.java
+================================================================================
+
+package com.archiver;
+
+import com.archiver.job.ArchiveCronJob;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@Slf4j
+@SpringBootApplication
+@EnableScheduling
+@RequiredArgsConstructor
+public class MongoArchiverApplication implements ApplicationRunner {
+
+    private final ArchiveCronJob archiveCronJob;
+
+    public static void main(String[] args) {
+        SpringApplication.run(MongoArchiverApplication.class, args);
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        if (args.containsOption("run-now")) {
+            log.info("[MongoArchiverApplication] --run-now: triggering immediate scheduled run");
+            archiveCronJob.runNow();
+            log.info("[MongoArchiverApplication] Done — shutting down");
+            System.exit(0);
+        }
+        log.info("[MongoArchiverApplication] Running in scheduled mode");
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/config/ArchiverProperties.java
+================================================================================
+
+package com.archiver.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+
+@Data
+@Component
+@ConfigurationProperties(prefix = "archiver")
+public class ArchiverProperties {
+
+    private String schedule = "0 0 2 * * ?";
+    private String timezone = "UTC";
+    private String archiveLogCollection = "archiveLog";
+    private List<JobProperties> jobs;
+
+    @Data
+    public static class JobProperties {
+        private String name;
+        private int batchSize = 100;
+        private AnchorProperties anchor;
+        private List<RelatedProperties> related;
+    }
+
+    @Data
+    public static class AnchorProperties {
+        private String collection;
+        private String idField;
+        private String createdTsField;
+        private int archiveAfterDays;
+        private boolean deleteAfterArchive = true;
+        private String archiveCollection;
+    }
+
+    @Data
+    public static class RelatedProperties {
+        private String collection;
+        private String idPath;
+        private boolean deleteAfterArchive = true;
+        private String archiveCollection;
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/core/Archiver.java
+================================================================================
+
+package com.archiver.core;
+
+import com.archiver.config.ArchiverProperties;
+import com.archiver.config.ArchiverProperties.AnchorProperties;
+import com.archiver.config.ArchiverProperties.JobProperties;
+import com.archiver.config.ArchiverProperties.RelatedProperties;
+import com.archiver.model.ArchiveLogEntry;
+import com.archiver.model.ArchiveLogEntry.CollectionStatus;
+import com.archiver.model.ArchiveLogEntry.Status;
+import com.archiver.util.ArchiveLogger;
+import com.archiver.util.IdPathResolver;
+import com.archiver.util.IndexManager;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.data.mongodb.core.BulkOperations;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
+
+import java.util.*;
+
+/**
+ * Archiver
+ *
+ * <p>Core archive engine for one configured job. Used by both:
+ * <ul>
+ *   <li>{@link ArchiveCronJob} — daily scheduled runs via {@link #run()}</li>
+ *   <li>{@link BackfillService} — startup backfill slices via {@link #runForDateRange(Date, Date)}</li>
+ * </ul>
+ *
+ * <h3>Query modes</h3>
+ * <ul>
+ *   <li>{@link #run()} — uses {@code archiveAfterDays} rolling cutoff</li>
+ *   <li>{@link #runForDateRange(Date, Date)} — uses explicit from/to date range</li>
+ * </ul>
+ */
+@Slf4j
+@RequiredArgsConstructor
+public class Archiver {
+
+    private final JobProperties jobConfig;
+    private final MongoTemplate mongoTemplate;
+    private final ArchiveLogger archiveLogger;
+
+    // ─── Entry points ─────────────────────────────────────────────────────────
+
+    /**
+     * Scheduled run — archive everything older than {@code archiveAfterDays}.
+     */
+    public void run() {
+        Date cutoff = getCutoffDate(jobConfig.getAnchor().getArchiveAfterDays());
+        log.info("[Archiver:{}] SCHEDULED run — archiving records with {} < {}",
+            jobConfig.getName(), jobConfig.getAnchor().getCreatedTsField(), cutoff);
+        executeWithQuery(IdPathResolver.buildCutoffQuery(
+            jobConfig.getAnchor().getCreatedTsField(), cutoff));
+    }
+
+    /**
+     * Backfill run — archive a specific date slice.
+     * Called by {@link BackfillService} for each monthly chunk.
+     *
+     * @param fromDate lower bound (inclusive)
+     * @param toDate   upper bound (exclusive)
+     */
+    public void runForDateRange(Date fromDate, Date toDate) {
+        log.info("[Archiver:{}] BACKFILL run — archiving records {} >= {} AND < {}",
+            jobConfig.getName(), jobConfig.getAnchor().getCreatedTsField(), fromDate, toDate);
+        executeWithQuery(IdPathResolver.buildDateRangeQuery(
+            jobConfig.getAnchor().getCreatedTsField(), fromDate, toDate));
+    }
+
+    // ─── Core execution ───────────────────────────────────────────────────────
+
+    private void executeWithQuery(Query anchorQuery) {
+        String jobName = jobConfig.getName();
+        IndexManager indexManager = new IndexManager(mongoTemplate);
+
+        try {
+            ensureIndexes(indexManager);
+
+            List<String> ids = fetchAnchorIds(anchorQuery);
+            if (ids.isEmpty()) {
+                log.info("[Archiver:{}] No records to archive", jobName);
+                return;
+            }
+
+            log.info("[Archiver:{}] {} entities to process", jobName, ids.size());
+
+            int batchSize = jobConfig.getBatchSize();
+            int totalBatches = (int) Math.ceil((double) ids.size() / batchSize);
+
+            for (int i = 0; i < ids.size(); i += batchSize) {
+                List<String> batch = ids.subList(i, Math.min(i + batchSize, ids.size()));
+                log.info("[Archiver:{}] Batch {}/{} ({} IDs)",
+                    jobName, (i / batchSize) + 1, totalBatches, batch.size());
+                processBatch(batch);
+            }
+
+        } finally {
+            indexManager.dropCreatedIndexes();
+        }
+    }
+
+    // ─── Index management ─────────────────────────────────────────────────────
+
+    private void ensureIndexes(IndexManager indexManager) {
+        AnchorProperties anchor = jobConfig.getAnchor();
+        indexManager.ensureIndex(anchor.getCollection(), anchor.getCreatedTsField());
+        indexManager.ensureIndex(anchor.getCollection(), anchor.getIdField());
+        for (RelatedProperties rel : jobConfig.getRelated()) {
+            indexManager.ensureIndex(rel.getCollection(), rel.getIdPath());
+        }
+        log.info("[Archiver:{}] Index check complete — {} temporary index(es) created",
+            jobConfig.getName(), indexManager.ownedCount());
+    }
+
+    // ─── Anchor ID fetching ───────────────────────────────────────────────────
+
+    private List<String> fetchAnchorIds(Query query) {
+        AnchorProperties anchor = jobConfig.getAnchor();
+        try {
+            query.fields().include(anchor.getIdField()).exclude("_id");
+            Set<String> ids = new LinkedHashSet<>();
+            mongoTemplate.find(query, Document.class, anchor.getCollection())
+                .forEach(doc -> {
+                    String id = IdPathResolver.extractIdAsString(doc, anchor.getIdField());
+                    if (id != null) ids.add(id);
+                });
+            log.info("[Archiver:{}] Found {} anchor IDs", jobConfig.getName(), ids.size());
+            return new ArrayList<>(ids);
+        } catch (Exception e) {
+            log.error("[Archiver:{}] Failed to fetch anchor IDs: {}",
+                jobConfig.getName(), e.getMessage(), e);
+            return List.of();
+        }
+    }
+
+    // ─── Batch & entity processing ────────────────────────────────────────────
+
+    private void processBatch(List<String> entityIds) {
+        for (String entityId : entityIds) {
+            processEntity(entityId);
+        }
+    }
+
+    private void processEntity(String entityId) {
+        Map<String, String> collectionResults = new LinkedHashMap<>();
+
+        boolean allRelatedSucceeded = true;
+        for (RelatedProperties rel : jobConfig.getRelated()) {
+            CollectionStatus result = archiveCollection(
+                entityId, rel.getCollection(), rel.getIdPath(),
+                rel.getArchiveCollection(), rel.isDeleteAfterArchive()
+            );
+            collectionResults.put(rel.getCollection(), result.name());
+            if (result == CollectionStatus.FAILED) allRelatedSucceeded = false;
+        }
+
+        AnchorProperties anchor = jobConfig.getAnchor();
+        if (allRelatedSucceeded) {
+            CollectionStatus anchorResult = archiveCollection(
+                entityId, anchor.getCollection(), anchor.getIdField(),
+                anchor.getArchiveCollection(), anchor.isDeleteAfterArchive()
+            );
+            collectionResults.put(anchor.getCollection(), anchorResult.name());
+        } else {
+            collectionResults.put(anchor.getCollection(), CollectionStatus.SKIPPED.name());
+            log.warn("[Archiver:{}] Anchor skipped for entity '{}' — related failure.",
+                jobConfig.getName(), entityId);
+        }
+
+        archiveLogger.log(ArchiveLogEntry.builder()
+            .jobName(jobConfig.getName())
+            .entityId(entityId)
+            .status(deriveOverallStatus(collectionResults))
+            .collections(collectionResults)
+            .runAt(new Date())
+            .build());
+    }
+
+    // ─── Status derivation ────────────────────────────────────────────────────
+
+    private Status deriveOverallStatus(Map<String, String> results) {
+        long failed  = results.values().stream().filter(s -> s.equals(CollectionStatus.FAILED.name())).count();
+        long skipped = results.values().stream().filter(s -> s.equals(CollectionStatus.SKIPPED.name())).count();
+        if (skipped > 0)              return Status.PARTIAL_FAILURE;
+        if (failed == results.size()) return Status.FAILED;
+        if (failed > 0)               return Status.PARTIAL_FAILURE;
+        return Status.SUCCESS;
+    }
+
+    // ─── Core archive operation ───────────────────────────────────────────────
+
+    private CollectionStatus archiveCollection(
+        String entityId, String srcCollection, String idPath,
+        String archiveCollection, boolean deleteAfterArchive
+    ) {
+        String jobName = jobConfig.getName();
+        try {
+            Query query = IdPathResolver.buildSingleQuery(idPath, entityId);
+            List<Document> docs = mongoTemplate.find(query, Document.class, srcCollection);
+
+            if (docs.isEmpty()) {
+                log.debug("[Archiver:{}] No documents in '{}' for entity '{}'",
+                    jobName, srcCollection, entityId);
+                return CollectionStatus.NO_DOCUMENTS;
+            }
+
+            Date archivedAt = new Date();
+            docs.forEach(doc -> {
+                doc.append("_archivedAt", archivedAt);
+                doc.append("_archivedFrom", srcCollection);
+            });
+
+            bulkInsert(docs, archiveCollection, jobName, entityId, srcCollection);
+
+            if (deleteAfterArchive) {
+                mongoTemplate.remove(query, srcCollection);
+            }
+
+            log.info("[Archiver:{}] Archived {} doc(s): '{}' → '{}' (entity: '{}')",
+                jobName, docs.size(), srcCollection, archiveCollection, entityId);
+
+            return CollectionStatus.SUCCESS;
+
+        } catch (Exception e) {
+            log.error("[Archiver:{}] FAILED '{}' for entity '{}': {}",
+                jobName, srcCollection, entityId, e.getMessage(), e);
+            return CollectionStatus.FAILED;
+        }
+    }
+
+    // ─── Bulk insert ──────────────────────────────────────────────────────────
+
+    private void bulkInsert(List<Document> docs, String collection,
+                            String jobName, String entityId, String srcCollection) {
+        try {
+            BulkOperations bulk = mongoTemplate.bulkOps(BulkOperations.BulkMode.UNORDERED, collection);
+            docs.forEach(bulk::insert);
+            bulk.execute();
+        } catch (org.springframework.data.mongodb.BulkOperationException e) {
+            int inserted = e.getResult() != null ? e.getResult().getInsertedCount() : 0;
+            int dupes = docs.size() - inserted;
+            if (dupes > 0) {
+                log.warn("[Archiver:{}] '{}' entity='{}' — {} already archived, {} newly inserted",
+                    jobName, srcCollection, entityId, dupes, inserted);
+            }
+        }
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    private Date getCutoffDate(int days) {
+        Calendar cal = Calendar.getInstance();
+        cal.add(Calendar.DATE, -days);
+        return cal.getTime();
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/core/BackfillService.java
+================================================================================
+
+package com.archiver.core;
+
+import com.archiver.config.ArchiverProperties;
+import com.archiver.config.ArchiverProperties.AnchorProperties;
+import com.archiver.config.ArchiverProperties.JobProperties;
+import com.archiver.model.BackfillState;
+import com.archiver.model.BackfillState.Status;
+import com.archiver.util.ArchiveLogger;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.stereotype.Component;
+
+import java.util.Calendar;
+import java.util.Date;
+import java.util.List;
+
+/**
+ * BackfillService
+ *
+ * <p>Runs on application startup (before the scheduler begins).
+ * For each configured job, checks whether a backfill is needed and
+ * processes monthly slices from the oldest record up to the archive cutoff.
+ *
+ * <h3>State machine per job</h3>
+ * <pre>
+ *   No state in DB    → fresh install, check if backfill needed
+ *   IN_PROGRESS       → resume from lastCompletedSliceEnd (restart recovery)
+ *   COMPLETED         → skip, go straight to scheduler
+ * </pre>
+ *
+ * <h3>Resume on restart</h3>
+ * <p>After each slice completes, {@link BackfillStateRepository#markSliceCompleted}
+ * persists the resume point. If the app restarts mid-backfill, it picks up
+ * from the last completed slice — not from the beginning.
+ *
+ * <h3>Backfill detection</h3>
+ * <p>Queries the anchor collection for its oldest record. If that date is
+ * older than {@code now - archiveAfterDays}, a backfill is needed.
+ * If the anchor collection is empty or all records are within the retention
+ * window, backfill is skipped.
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class BackfillService {
+
+    private final ArchiverProperties properties;
+    private final MongoTemplate mongoTemplate;
+    private final ArchiveLogger archiveLogger;
+    private final BackfillStateRepository stateRepository;
+
+    /**
+     * Entry point — called from {@link com.archiver.job.ArchiveCronJob} on startup.
+     * Processes all configured jobs sequentially.
+     */
+    public void runBackfillIfNeeded() {
+        stateRepository.ensureIndexes();
+
+        for (JobProperties jobConfig : properties.getJobs()) {
+            try {
+                processJob(jobConfig);
+            } catch (Exception e) {
+                log.error("[BackfillService:{}] Backfill failed: {}",
+                    jobConfig.getName(), e.getMessage(), e);
+            }
+        }
+    }
+
+    // ─── Per-job backfill ─────────────────────────────────────────────────────
+
+    private void processJob(JobProperties jobConfig) {
+        String jobName = jobConfig.getName();
+        BackfillState state = stateRepository.load(jobName);
+
+        // ── Already completed — skip ──────────────────────────────────────────
+        if (state != null && state.getStatus() == Status.COMPLETED) {
+            log.info("[BackfillService:{}] Backfill already completed — skipping", jobName);
+            return;
+        }
+
+        // ── Resuming an interrupted backfill ──────────────────────────────────
+        if (state != null && state.getStatus() == Status.IN_PROGRESS) {
+            log.info("[BackfillService:{}] Resuming interrupted backfill from {}",
+                jobName, state.getLastCompletedSliceEnd());
+            runSlices(jobConfig, state);
+            return;
+        }
+
+        // ── Fresh start — check if backfill is needed ─────────────────────────
+        Date cutoff = getCutoffDate(jobConfig.getAnchor().getArchiveAfterDays());
+        Date oldestRecord = findOldestRecordDate(jobConfig.getAnchor());
+
+        if (oldestRecord == null) {
+            log.info("[BackfillService:{}] Anchor collection is empty — no backfill needed", jobName);
+            return;
+        }
+
+        if (!oldestRecord.before(cutoff)) {
+            log.info("[BackfillService:{}] Oldest record ({}) is within retention window — no backfill needed",
+                jobName, oldestRecord);
+            return;
+        }
+
+        // ── Calculate slices and persist initial state ────────────────────────
+        Date fromDate = floorToMonthStart(oldestRecord);
+        Date toDate   = floorToMonthStart(cutoff);
+        int totalSlices = countMonthsBetween(fromDate, toDate);
+
+        log.info("[BackfillService:{}] Backfill needed — {} monthly slices from {} to {}",
+            jobName, totalSlices, fromDate, toDate);
+
+        state = BackfillState.builder()
+            .jobName(jobName)
+            .status(Status.IN_PROGRESS)
+            .backfillFromDate(fromDate)
+            .backfillToDate(toDate)
+            .totalSlices(totalSlices)
+            .completedSlices(0)
+            .startedAt(new Date())
+            .build();
+
+        stateRepository.saveInitial(state);
+        runSlices(jobConfig, state);
+    }
+
+    // ─── Slice execution ──────────────────────────────────────────────────────
+
+    /**
+     * Execute monthly slices from the resume point to backfillToDate.
+     * Each completed slice is persisted before moving to the next.
+     */
+    private void runSlices(JobProperties jobConfig, BackfillState state) {
+        String jobName = jobConfig.getName();
+
+        // Resume from lastCompletedSliceEnd if set, otherwise from beginning
+        Date sliceStart = state.getLastCompletedSliceEnd() != null
+            ? state.getLastCompletedSliceEnd()
+            : state.getBackfillFromDate();
+
+        Date backfillEnd = state.getBackfillToDate();
+        int completedSlices = state.getCompletedSlices();
+        int totalSlices = state.getTotalSlices();
+
+        while (sliceStart.before(backfillEnd)) {
+            Date sliceEnd = addOneMonth(sliceStart);
+            if (sliceEnd.after(backfillEnd)) sliceEnd = backfillEnd;
+
+            log.info("[BackfillService:{}] Slice {}/{} — {} to {}",
+                jobName, completedSlices + 1, totalSlices, sliceStart, sliceEnd);
+
+            // Run Archiver for this date slice
+            Archiver archiver = new Archiver(jobConfig, mongoTemplate, archiveLogger);
+            archiver.runForDateRange(sliceStart, sliceEnd);
+
+            // Persist progress — this is the restart resume point
+            completedSlices++;
+            stateRepository.markSliceCompleted(jobName, sliceEnd, completedSlices);
+
+            log.info("[BackfillService:{}] Slice {}/{} complete",
+                jobName, completedSlices, totalSlices);
+
+            sliceStart = sliceEnd;
+        }
+
+        stateRepository.markCompleted(jobName);
+        log.info("[BackfillService:{}] All {} slices complete — backfill done", jobName, totalSlices);
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Query the anchor collection for the oldest record's timestamp.
+     * Returns null if the collection is empty.
+     */
+    private Date findOldestRecordDate(AnchorProperties anchor) {
+        try {
+            Query query = new Query()
+                .with(org.springframework.data.domain.Sort.by(
+                    org.springframework.data.domain.Sort.Direction.ASC,
+                    anchor.getCreatedTsField()))
+                .limit(1);
+            query.fields().include(anchor.getCreatedTsField()).exclude("_id");
+
+            Document doc = mongoTemplate.findOne(query, Document.class, anchor.getCollection());
+            if (doc == null) return null;
+
+            Object ts = doc.get(anchor.getCreatedTsField());
+            if (ts instanceof Date) return (Date) ts;
+            return null;
+        } catch (Exception e) {
+            log.error("[BackfillService] Failed to find oldest record in '{}': {}",
+                anchor.getCollection(), e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private Date getCutoffDate(int days) {
+        Calendar cal = Calendar.getInstance();
+        cal.add(Calendar.DATE, -days);
+        return cal.getTime();
+    }
+
+    /** Floor a date to the first day of its month at midnight. */
+    private Date floorToMonthStart(Date date) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(date);
+        cal.set(Calendar.DAY_OF_MONTH, 1);
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        return cal.getTime();
+    }
+
+    private Date addOneMonth(Date date) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTime(date);
+        cal.add(Calendar.MONTH, 1);
+        return cal.getTime();
+    }
+
+    private int countMonthsBetween(Date from, Date to) {
+        Calendar start = Calendar.getInstance();
+        start.setTime(from);
+        Calendar end = Calendar.getInstance();
+        end.setTime(to);
+        int months = 0;
+        while (start.before(end)) {
+            start.add(Calendar.MONTH, 1);
+            months++;
+        }
+        return months;
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/core/BackfillStateRepository.java
+================================================================================
+
+package com.archiver.core;
+
+import com.archiver.model.BackfillState;
+import com.archiver.model.BackfillState.Status;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Component;
+
+import java.util.Date;
+
+/**
+ * BackfillStateRepository
+ *
+ * <p>Reads and writes the {@code backfillState} collection — one document per job.
+ * Provides the resume-on-restart guarantee: if the app crashes mid-backfill,
+ * the next startup picks up from {@code lastCompletedSliceEnd}.
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class BackfillStateRepository {
+
+    static final String COLLECTION = "backfillState";
+
+    private final MongoTemplate mongoTemplate;
+
+    // ─── Reads ────────────────────────────────────────────────────────────────
+
+    /**
+     * Load persisted backfill state for a job.
+     * Returns {@code null} if no state exists yet (fresh install).
+     */
+    public BackfillState load(String jobName) {
+        return mongoTemplate.findOne(
+            Query.query(Criteria.where("jobName").is(jobName)),
+            BackfillState.class,
+            COLLECTION
+        );
+    }
+
+    // ─── Writes ───────────────────────────────────────────────────────────────
+
+    /**
+     * Persist initial state when a backfill begins for the first time.
+     */
+    public void saveInitial(BackfillState state) {
+        mongoTemplate.upsert(
+            Query.query(Criteria.where("jobName").is(state.getJobName())),
+            new Update()
+                .set("status", Status.IN_PROGRESS.name())
+                .set("backfillFromDate", state.getBackfillFromDate())
+                .set("backfillToDate", state.getBackfillToDate())
+                .set("totalSlices", state.getTotalSlices())
+                .set("completedSlices", 0)
+                .set("lastCompletedSliceEnd", null)
+                .set("startedAt", new Date())
+                .set("completedAt", null),
+            COLLECTION
+        );
+    }
+
+    /**
+     * Update progress after each successfully completed slice.
+     * This is the resume point — on restart, backfill continues from here.
+     */
+    public void markSliceCompleted(String jobName, Date sliceEnd, int completedSlices) {
+        mongoTemplate.updateFirst(
+            Query.query(Criteria.where("jobName").is(jobName)),
+            new Update()
+                .set("lastCompletedSliceEnd", sliceEnd)
+                .set("completedSlices", completedSlices),
+            COLLECTION
+        );
+        log.info("[BackfillState:{}] Slice completed — progress saved (resumable at {})",
+            jobName, sliceEnd);
+    }
+
+    /**
+     * Mark the backfill as fully completed for this job.
+     * Subsequent startups will skip backfill entirely.
+     */
+    public void markCompleted(String jobName) {
+        mongoTemplate.updateFirst(
+            Query.query(Criteria.where("jobName").is(jobName)),
+            new Update()
+                .set("status", Status.COMPLETED.name())
+                .set("completedAt", new Date()),
+            COLLECTION
+        );
+        log.info("[BackfillState:{}] Backfill marked COMPLETED", jobName);
+    }
+
+    /**
+     * Ensure a unique index on jobName for fast lookups.
+     */
+    public void ensureIndexes() {
+        try {
+            mongoTemplate.indexOps(COLLECTION)
+                .ensureIndex(new Index("jobName", Sort.Direction.ASC).unique());
+        } catch (Exception e) {
+            log.warn("[BackfillStateRepository] Index creation warning: {}", e.getMessage());
+        }
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/job/ArchiveCronJob.java
+================================================================================
+
+package com.archiver.job;
+
+import com.archiver.config.ArchiverProperties;
+import com.archiver.core.Archiver;
+import com.archiver.core.BackfillService;
+import com.archiver.util.ArchiveLogger;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * ArchiveCronJob
+ *
+ * <p>On startup ({@link PostConstruct}):
+ * <ol>
+ *   <li>Ensures archiveLog indexes.</li>
+ *   <li>Runs {@link BackfillService} — handles the initial backfill automatically,
+ *       resuming from the last completed slice if the app was restarted mid-backfill.</li>
+ * </ol>
+ *
+ * <p>After startup, runs on the configured cron schedule for daily incremental archival.
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class ArchiveCronJob {
+
+    private final ArchiverProperties properties;
+    private final MongoTemplate mongoTemplate;
+    private final ArchiveLogger archiveLogger;
+    private final BackfillService backfillService;
+
+    private final AtomicBoolean running = new AtomicBoolean(false);
+
+    @PostConstruct
+    public void init() {
+        archiveLogger.ensureIndexes();
+        log.info("[ArchiveCronJob] Initialised. Schedule='{}' timezone='{}'",
+            properties.getSchedule(), properties.getTimezone());
+        log.info("[ArchiveCronJob] {} job(s) configured: {}",
+            properties.getJobs().size(),
+            properties.getJobs().stream().map(ArchiverProperties.JobProperties::getName).toList());
+
+        // Run backfill on startup — no-op if already completed or not needed
+        log.info("[ArchiveCronJob] Checking if backfill is needed...");
+        backfillService.runBackfillIfNeeded();
+        log.info("[ArchiveCronJob] Backfill check complete — scheduler is now active");
+    }
+
+    @Scheduled(cron = "${archiver.schedule}", zone = "${archiver.timezone}")
+    public void runScheduled() {
+        execute("scheduled");
+    }
+
+    public void runNow() {
+        execute("manual");
+    }
+
+    private void execute(String trigger) {
+        if (!running.compareAndSet(false, true)) {
+            log.warn("[ArchiveCronJob] Previous run still in progress — skipping {} trigger", trigger);
+            return;
+        }
+        long start = System.currentTimeMillis();
+        log.info("[ArchiveCronJob] Run started at {} (trigger: {})", Instant.now(), trigger);
+        try {
+            for (ArchiverProperties.JobProperties jobConfig : properties.getJobs()) {
+                try {
+                    new Archiver(jobConfig, mongoTemplate, archiveLogger).run();
+                } catch (Exception e) {
+                    log.error("[ArchiveCronJob] Unhandled error in job '{}': {}",
+                        jobConfig.getName(), e.getMessage(), e);
+                }
+            }
+        } finally {
+            running.set(false);
+            log.info("[ArchiveCronJob] Completed in {}s",
+                String.format("%.1f", (System.currentTimeMillis() - start) / 1000.0));
+        }
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/model/ArchiveLogEntry.java
+================================================================================
+
+package com.archiver.model;
+
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.Date;
+import java.util.Map;
+
+@Data
+@Builder
+public class ArchiveLogEntry {
+
+    public enum Status {
+        SUCCESS, PARTIAL_FAILURE, FAILED, SKIPPED
+    }
+
+    public enum CollectionStatus {
+        SUCCESS, FAILED, NO_DOCUMENTS, SKIPPED
+    }
+
+    private String jobName;
+    private String entityId;
+    private Status status;
+    private Map<String, String> collections;
+    private Date runAt;
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/model/BackfillState.java
+================================================================================
+
+package com.archiver.model;
+
+import lombok.Builder;
+import lombok.Data;
+
+import java.util.Date;
+
+/**
+ * Persisted in the {@code backfillState} collection — one document per job.
+ *
+ * <p>Tracks backfill progress so a mid-run restart resumes from the last
+ * completed slice rather than starting over from the beginning.
+ *
+ * <p>Document shape:
+ * <pre>
+ * {
+ *   "jobName"               : "orders",
+ *   "status"                : "NOT_STARTED | IN_PROGRESS | COMPLETED",
+ *   "backfillFromDate"      : ISODate("2022-01-01"),  // oldest record found
+ *   "backfillToDate"        : ISODate("2025-01-01"),  // cutoff = now - archiveAfterDays
+ *   "lastCompletedSliceEnd" : ISODate("2022-08-01"),  // resume point on restart
+ *   "totalSlices"           : 36,
+ *   "completedSlices"       : 7,
+ *   "startedAt"             : ISODate("..."),
+ *   "completedAt"           : null | ISODate("...")
+ * }
+ * </pre>
+ */
+@Data
+@Builder
+public class BackfillState {
+
+    public enum Status {
+        NOT_STARTED,
+        IN_PROGRESS,
+        COMPLETED
+    }
+
+    private String jobName;
+    private Status status;
+
+    /** Oldest record date found in anchor collection — backfill starts here. */
+    private Date backfillFromDate;
+
+    /** now - archiveAfterDays — backfill ends here, scheduler takes over. */
+    private Date backfillToDate;
+
+    /**
+     * End date of the last successfully completed slice.
+     * On restart, backfill resumes from this date.
+     * Null if no slice has completed yet.
+     */
+    private Date lastCompletedSliceEnd;
+
+    private int totalSlices;
+    private int completedSlices;
+    private Date startedAt;
+    private Date completedAt;
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/util/ArchiveLogger.java
+================================================================================
+
+package com.archiver.util;
+
+import com.archiver.config.ArchiverProperties;
+import com.archiver.model.ArchiveLogEntry;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.CompoundIndexDefinition;
+import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
+import org.springframework.stereotype.Component;
+
+import java.util.Date;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class ArchiveLogger {
+
+    private final MongoTemplate mongoTemplate;
+    private final ArchiverProperties properties;
+
+    public void log(ArchiveLogEntry entry) {
+        try {
+            Query query = Query.query(
+                Criteria.where("jobName").is(entry.getJobName())
+                        .and("entityId").is(entry.getEntityId())
+            );
+            Update update = new Update()
+                .set("status", entry.getStatus().name())
+                .set("collections", entry.getCollections())
+                .set("runAt", new Date())
+                .inc("retryCount", 1)
+                .setOnInsert("createdAt", new Date());
+            mongoTemplate.upsert(query, update, properties.getArchiveLogCollection());
+        } catch (Exception e) {
+            log.warn("[ArchiveLogger] Failed to write log for entity={}: {}",
+                entry.getEntityId(), e.getMessage());
+        }
+    }
+
+    public void ensureIndexes() {
+        try {
+            String col = properties.getArchiveLogCollection();
+            mongoTemplate.indexOps(col).ensureIndex(
+                new CompoundIndexDefinition(
+                    new Document("jobName", 1).append("entityId", 1)
+                ).unique()
+            );
+            mongoTemplate.indexOps(col).ensureIndex(
+                new CompoundIndexDefinition(new Document("status", 1).append("jobName", 1))
+            );
+            mongoTemplate.indexOps(col).ensureIndex(new Index("runAt", Sort.Direction.DESC));
+            log.info("[ArchiveLogger] Indexes ensured on '{}'", col);
+        } catch (Exception e) {
+            log.warn("[ArchiveLogger] Index creation warning: {}", e.getMessage());
+        }
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/util/IdPathResolver.java
+================================================================================
+
+package com.archiver.util;
+
+import org.bson.Document;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+
+import java.util.Date;
+import java.util.List;
+
+public final class IdPathResolver {
+
+    private IdPathResolver() {}
+
+    public static Object resolveValue(Document doc, String path) {
+        String[] parts = path.split("\\.");
+        Object current = doc;
+        for (String part : parts) {
+            if (!(current instanceof Document nested)) return null;
+            current = nested.get(part);
+        }
+        return current;
+    }
+
+    public static Query buildSingleQuery(String idPath, Object idValue) {
+        return Query.query(Criteria.where(idPath).is(idValue));
+    }
+
+    public static Query buildBatchQuery(String idPath, List<?> idValues) {
+        return Query.query(Criteria.where(idPath).in(idValues));
+    }
+
+    /** Scheduled mode: createdTsField < cutoff */
+    public static Query buildCutoffQuery(String tsField, Date cutoff) {
+        return Query.query(Criteria.where(tsField).lt(cutoff));
+    }
+
+    /** Backfill mode: createdTsField >= fromDate AND createdTsField < toDate */
+    public static Query buildDateRangeQuery(String tsField, Date fromDate, Date toDate) {
+        return Query.query(Criteria.where(tsField).gte(fromDate).lt(toDate));
+    }
+
+    public static String extractIdAsString(Document doc, String field) {
+        Object value = doc.get(field);
+        return value != null ? value.toString() : null;
+    }
+}
+
+================================================================================
+  FILE: src/main/java/com/archiver/util/IndexManager.java
+================================================================================
+
+package com.archiver.util;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
+import org.springframework.data.mongodb.core.index.IndexInfo;
+import org.springframework.data.mongodb.core.index.IndexOperations;
+
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+
+@Slf4j
+@RequiredArgsConstructor
+public class IndexManager {
+
+    private static final String INDEX_PREFIX = "_arch_tmp_";
+    private final MongoTemplate mongoTemplate;
+    private final Set<String> ownedIndexes = new LinkedHashSet<>();
+
+    public void ensureIndex(String collection, String fieldPath) {
+        try {
+            IndexOperations indexOps = mongoTemplate.indexOps(collection);
+            if (indexAlreadyExists(indexOps, fieldPath)) {
+                log.info("[IndexManager] Pre-existing index on '{}.{}' — reusing", collection, fieldPath);
+                return;
+            }
+            String indexName = INDEX_PREFIX + fieldPath.replace(".", "_");
+            indexOps.ensureIndex(new Index().on(fieldPath, Sort.Direction.ASC).named(indexName));
+            ownedIndexes.add(collection + "::" + indexName);
+            log.info("[IndexManager] Created temporary index '{}' on '{}.{}'", indexName, collection, fieldPath);
+        } catch (Exception e) {
+            log.warn("[IndexManager] Could not ensure index on '{}.{}': {}", collection, fieldPath, e.getMessage());
+        }
+    }
+
+    public void dropCreatedIndexes() {
+        if (ownedIndexes.isEmpty()) return;
+        log.info("[IndexManager] Dropping {} temporary index(es)...", ownedIndexes.size());
+        for (String key : ownedIndexes) {
+            String[] parts = key.split("::", 2);
+            try {
+                mongoTemplate.indexOps(parts[0]).dropIndex(parts[1]);
+                log.info("[IndexManager] Dropped '{}' on '{}'", parts[1], parts[0]);
+            } catch (Exception e) {
+                log.warn("[IndexManager] Failed to drop '{}' on '{}': {}", parts[1], parts[0], e.getMessage());
+            }
+        }
+        ownedIndexes.clear();
+    }
+
+    public int ownedCount() { return ownedIndexes.size(); }
+
+    private boolean indexAlreadyExists(IndexOperations indexOps, String fieldPath) {
+        try {
+            List<IndexInfo> existing = indexOps.getIndexInfo();
+            return existing.stream().anyMatch(info ->
+                info.getIndexFields().stream().anyMatch(f -> f.getKey().equals(fieldPath)));
+        } catch (Exception e) {
+            log.warn("[IndexManager] Could not read index info: {}", e.getMessage());
+            return false;
+        }
+    }
+}
+
+================================================================================
+  END OF FILE
+================================================================================
